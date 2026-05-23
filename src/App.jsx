@@ -1439,7 +1439,7 @@ function ComingSoon({ title, icon }) {
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
   const [orgName, setOrgName] = useState("");
-  const [siteType, setSiteType] = useState("");
+  const [siteTypes, setSiteTypes] = useState([]);
 
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1448,9 +1448,9 @@ function OnboardingPage({ session, onComplete }) {
   const token = session?.access_token;
 
   const SITE_TYPES = [
-    { id: "storage", icon: "🏭", label: "Self-storage", sub: "Standard units" },
-    { id: "mixed",   icon: "🏘️", label: "Mixed use",    sub: "Storage + residential" },
-    { id: "other",   icon: "🏢", label: "Other",         sub: "Commercial, industrial" },
+    { id: "storage",     icon: "🏭", label: "Self-storage",  sub: "Standard storage units" },
+    { id: "residential", icon: "🏘️", label: "Residential",   sub: "Houses, flats, cottages" },
+    { id: "commercial",  icon: "🏢", label: "Commercial",    sub: "Offices, workshops, units" },
   ];
 
   const steps = [
@@ -1465,7 +1465,7 @@ function OnboardingPage({ session, onComplete }) {
   }
 
   async function handleStep2() {
-    if (!siteType) { setErr("Please select a site type"); return; }
+    if (siteTypes.length === 0) { setErr("Please select at least one option"); return; }
     setErr(""); setStep(3);
   }
 
@@ -1532,17 +1532,19 @@ function OnboardingPage({ session, onComplete }) {
         {/* Step 2 — Site type */}
         {step === 2 && (
           <>
-            <div className="onboard-heading">What type of site do you operate?</div>
+            <div className="onboard-heading">What does your site include?</div>
             <div className="onboard-sub">
-              This helps us configure the right options for your site.
+              Select all that apply. You can manage each category separately once you're set up.
             </div>
             {err && <div className="onboard-err">{err}</div>}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
               {SITE_TYPES.map(t => (
                 <div
                   key={t.id}
-                  className={`category-card ${siteType === t.id ? "selected" : ""}`}
-                  onClick={() => setSiteType(t.id)}
+                  className={`category-card ${siteTypes.includes(t.id) ? "selected" : ""}`}
+                  onClick={() => setSiteTypes(prev =>
+                    prev.includes(t.id) ? prev.filter(x => x !== t.id) : [...prev, t.id]
+                  )}
                 >
                   <div className="category-card-icon">{t.icon}</div>
                   <div className="category-card-label">{t.label}</div>
@@ -1550,7 +1552,7 @@ function OnboardingPage({ session, onComplete }) {
                 </div>
               ))}
             </div>
-            <button className="onboard-btn" onClick={handleStep2} disabled={!siteType}>
+            <button className="onboard-btn" onClick={handleStep2} disabled={siteTypes.length === 0}>
               Continue →
             </button>
             <button
@@ -1574,7 +1576,7 @@ function OnboardingPage({ session, onComplete }) {
             <div style={{ background: "var(--mist)", borderRadius: "var(--r)", padding: "16px 18px", marginBottom: 20 }}>
               {[
                 { label: "Business name", value: orgName },
-                { label: "Site type", value: SITE_TYPES.find(t => t.id === siteType)?.label },
+                { label: "Site includes", value: siteTypes.map(id => SITE_TYPES.find(t => t.id === id)?.label).join(", ") },
                 { label: "Plan", value: "Trial — 14 days free" },
               ].map(r => (
                 <div key={r.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
