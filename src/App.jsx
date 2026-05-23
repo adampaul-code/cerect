@@ -89,22 +89,23 @@ async function getOrgForUser(userId, token) {
 
 async function createOrg(name, userId, token) {
   const slug = name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  // Create org
   const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations`, {
     method: "POST",
     headers: { ...authH(token), Prefer: "return=representation" },
     body: JSON.stringify({ name, slug, plan: "trial" }),
   });
   const text = await r.text();
+  console.log("createOrg response:", r.status, text);
+  if (!r.ok) throw new Error(`Database error (${r.status}): ${text}`);
   let org = null;
   try { const arr = JSON.parse(text); org = Array.isArray(arr) ? arr[0] : arr; } catch {}
-  if (!org?.id) return null;
-  // Link user to org
-  await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
+  if (!org?.id) throw new Error("Organisation created but ID not returned");
+  const r2 = await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
     method: "POST",
     headers: { ...authH(token), Prefer: "return=minimal" },
     body: JSON.stringify({ org_id: org.id, user_id: userId, role: "admin" }),
   });
+  console.log("org_users response:", r2.status);
   return org;
 }
 
@@ -1449,7 +1450,6 @@ function OnboardingPage({ session, onComplete }) {
   const SITE_TYPES = [
     { id: "storage", icon: "🏭", label: "Self-storage", sub: "Standard storage units" },
     { id: "mixed",   icon: "🏘️", label: "Mixed use",    sub: "Storage + residential/commercial" },
-    { id: "rural",   icon: "🌾", label: "Rural / farm",  sub: "Farm buildings, outdoor storage" },
     { id: "other",   icon: "🏢", label: "Other",         sub: "Commercial, industrial, other" },
   ];
 
@@ -1473,7 +1473,6 @@ function OnboardingPage({ session, onComplete }) {
     setErr(""); setLoading(true);
     try {
       const org = await createOrg(orgName.trim(), userId, token);
-      if (!org) throw new Error("Could not create your organisation. Please try again.");
       onComplete(org);
     } catch (e) {
       setErr(e.message);
