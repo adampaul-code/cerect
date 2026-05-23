@@ -933,8 +933,7 @@ function LoginPage({ onLogin }) {
         setSessionData(data);
         setStage("mfa-verify");
       } else {
-        setSessionData(data);
-        setStage("mfa-enroll");
+        onLogin(data);
       }
     } catch (e) {
       setErr(e.message);
