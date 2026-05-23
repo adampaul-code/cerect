@@ -1448,9 +1448,9 @@ function OnboardingPage({ session, onComplete }) {
   const token = session?.access_token;
 
   const SITE_TYPES = [
-    { id: "storage", icon: "🏭", label: "Self-storage", sub: "Standard storage units" },
-    { id: "mixed",   icon: "🏘️", label: "Mixed use",    sub: "Storage + residential/commercial" },
-    { id: "other",   icon: "🏢", label: "Other",         sub: "Commercial, industrial, other" },
+    { id: "storage", icon: "🏭", label: "Self-storage", sub: "Standard units" },
+    { id: "mixed",   icon: "🏘️", label: "Mixed use",    sub: "Storage + residential" },
+    { id: "other",   icon: "🏢", label: "Other",         sub: "Commercial, industrial" },
   ];
 
   const steps = [
@@ -1537,7 +1537,7 @@ function OnboardingPage({ session, onComplete }) {
               This helps us configure the right options for your site.
             </div>
             {err && <div className="onboard-err">{err}</div>}
-            <div className="category-grid">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
               {SITE_TYPES.map(t => (
                 <div
                   key={t.id}
