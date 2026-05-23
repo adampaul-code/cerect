@@ -507,3 +507,36 @@ body {
 .form-input { font-family: var(--fb); font-size: 15px; padding: 11px 14px; border: 1.5px solid var(--mist2); border-radius: var(--r); outline: none; transition: border-color .15s; color: var(--text); background: #fff; }
 .form-input:focus { border-color: var(--navy2); }
 .form-hint { font-size: 12px; color: var(--sub); margin-top: -10px; }
+
+/* ── Onboarding ────────────────────────────────────────────────────────────── */
+.onboard-page { min-height: 100vh; background: var(--mist); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.onboard-card { background: #fff; border-radius: 20px; border: 1px solid var(--border); padding: 40px; width: 100%; max-width: 520px; box-shadow: var(--shl); }
+.onboard-logo { font-family: var(--fh); font-size: 20px; font-weight: 700; color: var(--navy); margin-bottom: 32px; letter-spacing: -0.3px; }
+.onboard-logo span { color: var(--gold); }
+.onboard-steps { display: flex; align-items: center; gap: 0; margin-bottom: 32px; }
+.onboard-step-circle { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; transition: all .2s; }
+.onboard-step-circle.done { background: var(--success); color: #fff; }
+.onboard-step-circle.active { background: var(--navy); color: #fff; }
+.onboard-step-circle.pending { background: var(--mist); color: var(--sub); border: 1.5px solid var(--mist2); }
+.onboard-step-label { font-size: 12px; font-weight: 500; color: var(--sub); white-space: nowrap; }
+.onboard-step-label.active { color: var(--navy); }
+.onboard-step-label.done { color: var(--success); }
+.onboard-step-line { flex: 1; height: 1px; background: var(--mist2); margin: 0 8px; }
+.onboard-heading { font-family: var(--fh); font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.onboard-sub { font-size: 14px; color: var(--sub); line-height: 1.6; margin-bottom: 24px; }
+.onboard-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.onboard-label { font-size: 12px; font-weight: 500; color: var(--sub); text-transform: uppercase; letter-spacing: .6px; }
+.onboard-input { font-family: var(--fb); font-size: 15px; padding: 11px 14px; border: 1.5px solid var(--mist2); border-radius: var(--r); outline: none; transition: border-color .15s; color: var(--text); background: #fff; width: 100%; }
+.onboard-input:focus { border-color: var(--navy2); }
+.onboard-hint { font-size: 12px; color: var(--sub); }
+.onboard-btn { width: 100%; background: var(--navy); color: #fff; font-family: var(--fb); font-size: 15px; font-weight: 500; padding: 12px; border: none; border-radius: var(--r); cursor: pointer; margin-top: 8px; transition: background .15s; }
+.onboard-btn:hover { background: var(--navy2); }
+.onboard-btn:disabled { opacity: .5; cursor: not-allowed; }
+.onboard-err { background: #FFF0EE; border: 1px solid #FFCDD2; border-radius: var(--r); padding: 10px 14px; font-size: 13px; color: var(--danger); margin-bottom: 14px; }
+.category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+.category-card { border: 1.5px solid var(--mist2); border-radius: var(--r); padding: 14px; cursor: pointer; transition: all .15s; text-align: center; }
+.category-card:hover { border-color: var(--navy2); background: var(--mist); }
+.category-card.selected { border-color: var(--navy); background: #EEF4F8; }
+.category-card-icon { font-size: 22px; margin-bottom: 6px; }
+.category-card-label { font-size: 13px; font-weight: 500; color: var(--text); }
+.category-card-sub { font-size: 11px; color: var(--sub); margin-top: 2px; }
