@@ -1439,7 +1439,7 @@ function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
   const [orgName, setOrgName] = useState("");
   const [siteType, setSiteType] = useState("");
-  const [siteName, setSiteName] = useState("");
+
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
