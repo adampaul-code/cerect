@@ -1104,7 +1104,7 @@ function LoginPage({ onLogin }) {
               {err && <div className="login-err">{err}</div>}
               {sessionData?.qr && (
                 <div style={{ textAlign: "center", margin: "16px 0" }}>
-                  <img src={sessionData.qr} alt="QR code" style={{ width: 180, height: 180, border: "1px solid var(--border)", borderRadius: 8 }} />
+                  <img src={sessionData.qr} alt="QR code" style={{ width: 180, height: 180, border: "1px solid var(--border)", borderRadius: 8, display: "block", margin: "0 auto" }} onError={e => e.target.style.display="none"} /><p style={{ fontSize: 12, color: "var(--sub)", marginTop: 8 }}>If the QR code does not appear, use the secret key below to add manually.</p>
                 </div>
               )}
               {sessionData?.secret && (
