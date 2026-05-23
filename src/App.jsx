@@ -71,10 +71,6 @@ async function mfaListFactors(token) {
   return d.factors || [];
 }
 
-function authH(token) {
-  return { ...BASE_H, Authorization: `Bearer ${token}` };
-}
-
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap');
@@ -1360,7 +1356,7 @@ export default function App() {
       }
     }, 50 * 60 * 1000);
     return () => clearInterval(refreshRef.current);
-  }, [session]);
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLogin(s) {
     setSession(s);
