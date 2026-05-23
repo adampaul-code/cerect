@@ -78,7 +78,7 @@ function authH(token) {
 
 async function getOrgForUser(userId, token) {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/org_users?user_id=eq.${userId}&select=org_id,role,organisations(id,name,slug,plan)`,
+    `${SUPABASE_URL}/rest/v1/org_users?user_id=eq.${userId}&limit=1`,
     { headers: authH(token) }
   );
   if (!r.ok) return null;
@@ -95,9 +95,9 @@ async function createOrg(name, userId, token) {
     headers: { ...authH(token), Prefer: "return=representation" },
     body: JSON.stringify({ name, slug, plan: "trial" }),
   });
-  if (!r.ok) return null;
-  const orgs = await r.json();
-  const org = Array.isArray(orgs) ? orgs[0] : orgs;
+  const text = await r.text();
+  let org = null;
+  try { const arr = JSON.parse(text); org = Array.isArray(arr) ? arr[0] : arr; } catch {}
   if (!org?.id) return null;
   // Link user to org
   await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
@@ -110,7 +110,7 @@ async function createOrg(name, userId, token) {
 
 async function getOrgDetails(orgId, token) {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/organisations?id=eq.${orgId}`,
+    `${SUPABASE_URL}/rest/v1/organisations?id=eq.${orgId}&limit=1`,
     { headers: authH(token) }
   );
   if (!r.ok) return null;
@@ -1766,18 +1766,11 @@ export default function App() {
   useEffect(() => {
     if (!session?.user?.id) return;
     setOrgLoading(true);
-    getOrgForUser(session.user.id, session.access_token).then(row => {
-      if (row?.organisations) {
-        setOrg(row.organisations);
+    getOrgForUser(session.user.id, session.access_token).then(async row => {
+      if (row?.org_id) {
+        const o = await getOrgDetails(row.org_id, session.access_token);
+        setOrg(o);
         setNeedsOnboarding(false);
-      } else if (row?.org_id) {
-        // Has org_users row but need to fetch org details
-        getOrgDetails(row.org_id, session.access_token).then(o => {
-          setOrg(o);
-          setNeedsOnboarding(false);
-          setOrgLoading(false);
-        });
-        return;
       } else {
         setNeedsOnboarding(true);
       }
