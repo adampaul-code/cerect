@@ -1,4 +1,4 @@
-// Cerect v0.1 — Storage Management Platform
+// Cerect v0.2 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -69,6 +69,53 @@ async function mfaListFactors(token) {
   if (!r.ok) return [];
   const d = await r.json();
   return d.factors || [];
+}
+
+// ─── Org helpers ──────────────────────────────────────────────────────────────
+function authH(token) {
+  return { ...BASE_H, Authorization: `Bearer ${token}` };
+}
+
+async function getOrgForUser(userId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/org_users?user_id=eq.${userId}&select=org_id,role,organisations(id,name,slug,plan)`,
+    { headers: authH(token) }
+  );
+  if (!r.ok) return null;
+  const rows = await r.json();
+  if (!rows || rows.length === 0) return null;
+  return rows[0];
+}
+
+async function createOrg(name, userId, token) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  // Create org
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify({ name, slug, plan: "trial" }),
+  });
+  if (!r.ok) return null;
+  const orgs = await r.json();
+  const org = Array.isArray(orgs) ? orgs[0] : orgs;
+  if (!org?.id) return null;
+  // Link user to org
+  await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=minimal" },
+    body: JSON.stringify({ org_id: org.id, user_id: userId, role: "admin" }),
+  });
+  return org;
+}
+
+async function getOrgDetails(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/organisations?id=eq.${orgId}`,
+    { headers: authH(token) }
+  );
+  if (!r.ok) return null;
+  const rows = await r.json();
+  return rows?.[0] || null;
 }
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────
@@ -680,11 +727,213 @@ body {
 }
 
 /* ── Onboarding ──────────────────────────────────────────────────────────── */
-.onboard-wrap {
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 48px 24px;
+.onboard-page {
+  min-height: 100vh;
+  background: var(--mist);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
 }
+
+.onboard-card {
+  background: #fff;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  padding: 40px;
+  width: 100%;
+  max-width: 520px;
+  box-shadow: var(--shl);
+}
+
+.onboard-logo {
+  font-family: var(--fh);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--navy);
+  margin-bottom: 32px;
+  letter-spacing: -0.3px;
+}
+
+.onboard-logo span { color: var(--gold); }
+
+.onboard-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 32px;
+}
+
+.onboard-step-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.onboard-step-circle {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: all .2s;
+}
+
+.onboard-step-circle.done {
+  background: var(--success);
+  color: #fff;
+}
+
+.onboard-step-circle.active {
+  background: var(--navy);
+  color: #fff;
+}
+
+.onboard-step-circle.pending {
+  background: var(--mist);
+  color: var(--sub);
+  border: 1.5px solid var(--mist2);
+}
+
+.onboard-step-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sub);
+  white-space: nowrap;
+}
+
+.onboard-step-label.active { color: var(--navy); }
+.onboard-step-label.done { color: var(--success); }
+
+.onboard-step-line {
+  flex: 1;
+  height: 1px;
+  background: var(--mist2);
+  margin: 0 8px;
+}
+
+.onboard-heading {
+  font-family: var(--fh);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.onboard-sub {
+  font-size: 14px;
+  color: var(--sub);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.onboard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.onboard-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sub);
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+
+.onboard-input {
+  font-family: var(--fb);
+  font-size: 15px;
+  padding: 11px 14px;
+  border: 1.5px solid var(--mist2);
+  border-radius: var(--r);
+  outline: none;
+  transition: border-color .15s;
+  color: var(--text);
+  background: #fff;
+  width: 100%;
+}
+
+.onboard-input:focus { border-color: var(--navy2); }
+
+.onboard-hint {
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.onboard-btn {
+  width: 100%;
+  background: var(--navy);
+  color: #fff;
+  font-family: var(--fb);
+  font-size: 15px;
+  font-weight: 500;
+  padding: 12px;
+  border: none;
+  border-radius: var(--r);
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background .15s;
+}
+
+.onboard-btn:hover { background: var(--navy2); }
+.onboard-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.onboard-err {
+  background: #FFF0EE;
+  border: 1px solid #FFCDD2;
+  border-radius: var(--r);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--danger);
+  margin-bottom: 14px;
+}
+
+.onboard-success {
+  text-align: center;
+  padding: 16px 0;
+}
+
+.onboard-success-icon {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: #EDF7F2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  font-size: 24px;
+}
+
+.category-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.category-card {
+  border: 1.5px solid var(--mist2);
+  border-radius: var(--r);
+  padding: 14px;
+  cursor: pointer;
+  transition: all .15s;
+  text-align: center;
+}
+
+.category-card:hover { border-color: var(--navy2); background: var(--mist); }
+.category-card.selected { border-color: var(--navy); background: #EEF4F8; }
+
+.category-card-icon { font-size: 22px; margin-bottom: 6px; }
+.category-card-label { font-size: 13px; font-weight: 500; color: var(--text); }
+.category-card-sub { font-size: 11px; color: var(--sub); margin-top: 2px; }
+
+
 
 .onboard-step-indicator {
   display: flex;
@@ -1185,9 +1434,177 @@ function ComingSoon({ title, icon }) {
   );
 }
 
+// ─── Onboarding Page ─────────────────────────────────────────────────────────
+function OnboardingPage({ session, onComplete }) {
+  const [step, setStep] = useState(1);
+  const [orgName, setOrgName] = useState("");
+  const [siteType, setSiteType] = useState("");
+  const [siteName, setSiteName] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const userId = session?.user?.id;
+  const token = session?.access_token;
+
+  const SITE_TYPES = [
+    { id: "storage", icon: "🏭", label: "Self-storage", sub: "Standard storage units" },
+    { id: "mixed",   icon: "🏘️", label: "Mixed use",    sub: "Storage + residential/commercial" },
+    { id: "rural",   icon: "🌾", label: "Rural / farm",  sub: "Farm buildings, outdoor storage" },
+    { id: "other",   icon: "🏢", label: "Other",         sub: "Commercial, industrial, other" },
+  ];
+
+  const steps = [
+    { n: 1, label: "Your business" },
+    { n: 2, label: "Site type" },
+    { n: 3, label: "Ready" },
+  ];
+
+  async function handleStep1() {
+    if (!orgName.trim()) { setErr("Please enter your business name"); return; }
+    setErr(""); setStep(2);
+  }
+
+  async function handleStep2() {
+    if (!siteType) { setErr("Please select a site type"); return; }
+    setErr(""); setStep(3);
+  }
+
+  async function handleFinish() {
+    setErr(""); setLoading(true);
+    try {
+      const org = await createOrg(orgName.trim(), userId, token);
+      if (!org) throw new Error("Could not create your organisation. Please try again.");
+      onComplete(org);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="onboard-page">
+      <div className="onboard-card">
+        <div className="onboard-logo">cerect<span>.</span></div>
+
+        {/* Step indicator */}
+        <div className="onboard-steps">
+          {steps.map((s, i) => (
+            <div key={s.n} style={{ display: "flex", alignItems: "center", flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div className={`onboard-step-circle ${step > s.n ? "done" : step === s.n ? "active" : "pending"}`}>
+                  {step > s.n ? "✓" : s.n}
+                </div>
+                <span className={`onboard-step-label ${step > s.n ? "done" : step === s.n ? "active" : ""}`}>
+                  {s.label}
+                </span>
+              </div>
+              {i < steps.length - 1 && <div className="onboard-step-line" />}
+            </div>
+          ))}
+        </div>
+
+        {/* Step 1 — Business name */}
+        {step === 1 && (
+          <>
+            <div className="onboard-heading">Welcome to Cerect</div>
+            <div className="onboard-sub">
+              Let's get your site set up. This only takes a minute.
+            </div>
+            {err && <div className="onboard-err">{err}</div>}
+            <div className="onboard-field">
+              <label className="onboard-label">Business name</label>
+              <input
+                className="onboard-input"
+                type="text"
+                placeholder="e.g. Acme Storage Ltd"
+                value={orgName}
+                onChange={e => setOrgName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleStep1()}
+                autoFocus
+              />
+              <span className="onboard-hint">This is the name your team will see in Cerect.</span>
+            </div>
+            <button className="onboard-btn" onClick={handleStep1}>
+              Continue →
+            </button>
+          </>
+        )}
+
+        {/* Step 2 — Site type */}
+        {step === 2 && (
+          <>
+            <div className="onboard-heading">What type of site do you operate?</div>
+            <div className="onboard-sub">
+              This helps us configure the right options for your site.
+            </div>
+            {err && <div className="onboard-err">{err}</div>}
+            <div className="category-grid">
+              {SITE_TYPES.map(t => (
+                <div
+                  key={t.id}
+                  className={`category-card ${siteType === t.id ? "selected" : ""}`}
+                  onClick={() => setSiteType(t.id)}
+                >
+                  <div className="category-card-icon">{t.icon}</div>
+                  <div className="category-card-label">{t.label}</div>
+                  <div className="category-card-sub">{t.sub}</div>
+                </div>
+              ))}
+            </div>
+            <button className="onboard-btn" onClick={handleStep2} disabled={!siteType}>
+              Continue →
+            </button>
+            <button
+              style={{ background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", marginTop: 12, display: "block", width: "100%", textAlign: "center" }}
+              onClick={() => { setStep(1); setErr(""); }}
+            >
+              ← Back
+            </button>
+          </>
+        )}
+
+        {/* Step 3 — Confirm and create */}
+        {step === 3 && (
+          <>
+            <div className="onboard-heading">You're all set</div>
+            <div className="onboard-sub">
+              We'll create your Cerect account now. You can add your areas and units right after.
+            </div>
+            {err && <div className="onboard-err">{err}</div>}
+
+            <div style={{ background: "var(--mist)", borderRadius: "var(--r)", padding: "16px 18px", marginBottom: 20 }}>
+              {[
+                { label: "Business name", value: orgName },
+                { label: "Site type", value: SITE_TYPES.find(t => t.id === siteType)?.label },
+                { label: "Plan", value: "Trial — 14 days free" },
+              ].map(r => (
+                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                  <span style={{ color: "var(--sub)" }}>{r.label}</span>
+                  <span style={{ fontWeight: 500 }}>{r.value}</span>
+                </div>
+              ))}
+            </div>
+
+            <button className="onboard-btn" onClick={handleFinish} disabled={loading}>
+              {loading ? "Creating your account…" : "Launch Cerect →"}
+            </button>
+            <button
+              style={{ background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", marginTop: 12, display: "block", width: "100%", textAlign: "center" }}
+              onClick={() => { setStep(2); setErr(""); }}
+            >
+              ← Back
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Dashboard Page ───────────────────────────────────────────────────────
-function DashboardPage({ session }) {
+function DashboardPage({ session, org }) {
   const email = session?.user?.email || "";
+  const orgName = org?.name || "Your site";
 
   return (
     <div className="page">
@@ -1196,7 +1613,7 @@ function DashboardPage({ session }) {
           Welcome to Cerect
         </h1>
         <p style={{ fontSize: 14, color: "var(--sub)" }}>
-          Your storage management platform is ready. Start by setting up your site.
+          {orgName} — let's get your site set up.
         </p>
       </div>
 
@@ -1220,8 +1637,8 @@ function DashboardPage({ session }) {
           <div className="card-title">Getting started</div>
           <div className="card-sub">Complete these steps to set up your site</div>
           {[
-            { step: 1, label: "Set up your site plan", done: false },
-            { step: 2, label: "Add your first area", done: false },
+            { step: 1, label: "Business set up", done: true },
+            { step: 2, label: "Set up your site plan", done: false },
             { step: 3, label: "Add your first tenant", done: false },
             { step: 4, label: "Record a payment", done: false },
           ].map(s => (
@@ -1247,9 +1664,9 @@ function DashboardPage({ session }) {
           <div className="card-sub">Organisation details</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
+              { label: "Organisation", value: orgName },
               { label: "Email", value: email },
-              { label: "Plan", value: "Trial" },
-              { label: "MFA", value: "Enabled ✓" },
+              { label: "Plan", value: org?.plan === "trial" ? "Trial" : (org?.plan || "Trial") },
             ].map(r => (
               <div key={r.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
                 <span style={{ color: "var(--sub)" }}>{r.label}</span>
@@ -1276,7 +1693,7 @@ const NAV = [
   { id: "settings",  label: "Settings",   icon: "settings",  section: null },
 ];
 
-function Sidebar({ page, setPage, session, onSignOut, open, onClose }) {
+function Sidebar({ page, setPage, session, org, onSignOut, open, onClose }) {
   const email = session?.user?.email || "";
   const initials = email ? email.slice(0, 2).toUpperCase() : "??";
   let lastSection = null;
@@ -1287,7 +1704,7 @@ function Sidebar({ page, setPage, session, onSignOut, open, onClose }) {
       <div className={`sidebar ${open ? "open" : ""}`}>
         <div className="sidebar-logo">
           <div className="sidebar-wordmark">cerect<span>.</span></div>
-          <div className="sidebar-tagline">Storage Management</div>
+          <div className="sidebar-tagline">{org?.name || "Storage Management"}</div>
         </div>
 
         <nav className="sidebar-nav">
@@ -1326,6 +1743,9 @@ function Sidebar({ page, setPage, session, onSignOut, open, onClose }) {
 // ─── App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [session, setSession] = useState(null);
+  const [org, setOrg] = useState(null);
+  const [orgLoading, setOrgLoading] = useState(false);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { toasts, toast } = useToast();
@@ -1341,6 +1761,29 @@ export default function App() {
       }
     } catch {}
   }, []);
+
+  // Load org whenever session changes
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    setOrgLoading(true);
+    getOrgForUser(session.user.id, session.access_token).then(row => {
+      if (row?.organisations) {
+        setOrg(row.organisations);
+        setNeedsOnboarding(false);
+      } else if (row?.org_id) {
+        // Has org_users row but need to fetch org details
+        getOrgDetails(row.org_id, session.access_token).then(o => {
+          setOrg(o);
+          setNeedsOnboarding(false);
+          setOrgLoading(false);
+        });
+        return;
+      } else {
+        setNeedsOnboarding(true);
+      }
+      setOrgLoading(false);
+    });
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh session every 50 minutes
   useEffect(() => {
@@ -1368,15 +1811,23 @@ export default function App() {
       try { await signOut(session.access_token); } catch {}
     }
     setSession(null);
+    setOrg(null);
+    setNeedsOnboarding(false);
     localStorage.removeItem("cerect_session");
     setPage("dashboard");
+  }
+
+  function handleOnboardingComplete(newOrg) {
+    setOrg(newOrg);
+    setNeedsOnboarding(false);
+    toast("Welcome to Cerect! Your account is ready.", "success");
   }
 
   const pageTitle = NAV.find(n => n.id === page)?.label || "Dashboard";
 
   function renderPage() {
     switch (page) {
-      case "dashboard": return <DashboardPage session={session} />;
+      case "dashboard": return <DashboardPage session={session} org={org} />;
       default: return (
         <div className="page">
           <ComingSoon title={pageTitle} />
@@ -1387,6 +1838,19 @@ export default function App() {
 
   if (!session) return <LoginPage onLogin={handleLogin} />;
 
+  if (orgLoading) return (
+    <div style={{ minHeight: "100vh", background: "var(--mist)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ textAlign: "center", color: "var(--sub)", fontSize: 14 }}>
+        <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", marginBottom: 8 }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
+        Loading your account…
+      </div>
+    </div>
+  );
+
+  if (needsOnboarding) return (
+    <OnboardingPage session={session} onComplete={handleOnboardingComplete} />
+  );
+
   return (
     <>
       <style>{CSS}</style>
@@ -1395,6 +1859,7 @@ export default function App() {
           page={page}
           setPage={setPage}
           session={session}
+          org={org}
           onSignOut={handleSignOut}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
@@ -1405,7 +1870,7 @@ export default function App() {
               <span style={{ width: 20, height: 20, display: "block" }}>{Icon.menu}</span>
             </button>
             <div className="topbar-title">{pageTitle}</div>
-            <div className="topbar-org">Trial</div>
+            <div className="topbar-org">{org?.name || "Trial"}</div>
           </div>
           {renderPage()}
         </div>
