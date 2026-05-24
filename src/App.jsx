@@ -1,4 +1,4 @@
-// Cerect v0.7 — Storage Management Platform
+// Cerect v0.8 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -3464,6 +3464,321 @@ function ArchivePage({ orgId, token, data, toast, onDataRefresh }) {
   );
 }
 
+// ─── Users Page ───────────────────────────────────────────────────────────────
+async function changePassword(newPassword, token) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: "PUT",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ password: newPassword }),
+  });
+  return r.ok;
+}
+
+async function mfaUnenroll(factorId, token) {
+  await fetch(`${SUPABASE_URL}/auth/v1/factors/${factorId}`, {
+    method: "DELETE",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+  });
+}
+
+function UsersPage({ token, session, toast }) {
+  const currentUserEmail = session?.user?.email || "";
+  const [users, setUsers] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [myFactors, setMyFactors] = useState([]);
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [changingPw, setChangingPw] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    if (!token) return;
+    fetch("/api/admin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "listUsers" }),
+    })
+      .then(r => r.json())
+      .then(d => setUsers(Array.isArray(d.users) ? d.users : []))
+      .catch(() => setUsers([]));
+    mfaListFactors(token).then(f => setMyFactors(Array.isArray(f) ? f : [])).catch(() => {});
+  }, [token]);
+
+  async function reloadUsers() {
+    const r = await fetch("/api/admin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "listUsers" }),
+    });
+    const d = await r.json();
+    setUsers(Array.isArray(d.users) ? d.users : []);
+  }
+
+  async function handleInvite() {
+    if (!inviteEmail) return;
+    setInviting(true); setMsg("");
+    const tempPass = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-4).toUpperCase() + "!1";
+    try {
+      const d = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "createUser", email: inviteEmail, password: tempPass }),
+      }).then(r => r.json());
+      if (d.error) throw new Error(d.error_description || d.msg || d.error);
+      await fetch("/api/send-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: inviteEmail, tempPassword: tempPass }),
+      });
+      setMsg(`✅ Invitation sent to ${inviteEmail}`);
+      setInviteEmail("");
+      await reloadUsers();
+    } catch (e) {
+      setMsg(`❌ Could not invite — ${e.message}`);
+    }
+    setInviting(false);
+  }
+
+  async function handleAddUser() {
+    if (!newEmail || !newPassword) return;
+    setAdding(true); setMsg("");
+    try {
+      const d = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "createUser", email: newEmail, password: newPassword }),
+      }).then(r => r.json());
+      if (d.error) throw new Error(d.error_description || d.msg || d.error);
+      setMsg(`✅ User ${newEmail} created`);
+      setNewEmail(""); setNewPassword(""); setShowAdd(false);
+      await reloadUsers();
+    } catch (e) {
+      setMsg(`❌ Could not create user — ${e.message}`);
+    }
+    setAdding(false);
+  }
+
+  async function handleRemoveUser(userId, email) {
+    if (!window.confirm(`Remove ${email} from Cerect? They will no longer be able to log in.`)) return;
+    try {
+      await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "deleteUser", userId }),
+      });
+      setMsg(`✅ ${email} has been removed`);
+      await reloadUsers();
+    } catch { setMsg("❌ Could not remove user"); }
+  }
+
+  async function handleResetPassword(email) {
+    if (!window.confirm(`Reset password for ${email}? A temporary password will be emailed to them.`)) return;
+    try {
+      const d = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resetPassword", email }),
+      }).then(r => r.json());
+      if (d.error) throw new Error(d.error);
+      await fetch("/api/send-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: email, tempPassword: d.tempPass }),
+      });
+      setMsg(`✅ Password reset email sent to ${email}`);
+    } catch (e) {
+      setMsg(`❌ Reset failed — ${e.message}`);
+    }
+  }
+
+  async function handleRemoveMFA(factorId) {
+    if (!window.confirm("Remove your MFA authenticator? You will no longer be asked for a code when logging in.")) return;
+    try {
+      await mfaUnenroll(factorId, token);
+      setMyFactors([]);
+      setMsg("✅ MFA removed from your account");
+    } catch { setMsg("❌ Could not remove MFA"); }
+  }
+
+  async function handleChangePassword() {
+    if (!newPw || !confirmPw) { setMsg("❌ Please fill in both password fields"); return; }
+    if (newPw !== confirmPw) { setMsg("❌ Passwords do not match"); return; }
+    if (newPw.length < 8) { setMsg("❌ Password must be at least 8 characters"); return; }
+    setChangingPw(true); setMsg("");
+    try {
+      const ok = await changePassword(newPw, token);
+      if (ok) {
+        setMsg("✅ Password changed successfully");
+        setNewPw(""); setConfirmPw(""); setShowChangePw(false);
+      } else {
+        setMsg("❌ Could not change password");
+      }
+    } catch (e) { setMsg("❌ Error: " + e.message); }
+    setChangingPw(false);
+  }
+
+  const verifiedFactors = myFactors.filter(f => f.status === "verified");
+
+  return (
+    <div className="page">
+      {msg && (
+        <div style={{
+          padding: "10px 14px",
+          background: msg.startsWith("✅") ? "#EBF5F0" : "#FFF0EE",
+          border: `1.5px solid ${msg.startsWith("✅") ? "#BDE5D3" : "#FFCDD2"}`,
+          borderRadius: 9, marginBottom: 16, fontSize: 13,
+          color: msg.startsWith("✅") ? "var(--success)" : "var(--danger)",
+        }}>{msg}</div>
+      )}
+
+      {/* Change password */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showChangePw ? 16 : 0 }}>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>🔑 Change My Password</div>
+          <button className="sp-btn" onClick={() => { setShowChangePw(s => !s); setMsg(""); }}>
+            {showChangePw ? "✕ Cancel" : "Change Password"}
+          </button>
+        </div>
+        {showChangePw && (
+          <div>
+            <div className="form-grid" style={{ marginBottom: 12 }}>
+              <div className="form-grid-item">
+                <label>New Password</label>
+                <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="At least 8 characters" />
+              </div>
+              <div className="form-grid-item">
+                <label>Confirm New Password</label>
+                <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} placeholder="Repeat new password" />
+              </div>
+            </div>
+            <button className="sp-btn sp-btn-navy" onClick={handleChangePassword} disabled={changingPw || !newPw || !confirmPw}>
+              {changingPw ? "Changing…" : "Update Password"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* MFA status */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)", marginBottom: 14 }}>🔐 Two-Factor Authentication</div>
+        {verifiedFactors.length > 0 ? (
+          <div>
+            <div style={{ background: "#EBF5F0", border: "1.5px solid #BDE5D3", borderRadius: 9, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <strong style={{ color: "var(--success)" }}>✅ MFA is active on your account</strong>
+                <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>Each login requires a 6-digit code from your authenticator app.</div>
+              </div>
+            </div>
+            {verifiedFactors.map(f => (
+              <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{f.friendly_name || "Authenticator App"}</div>
+                  <div style={{ fontSize: 12, color: "var(--sub)" }}>Added: {f.created_at ? new Date(f.created_at).toLocaleDateString("en-GB") : "Unknown"}</div>
+                </div>
+                <button className="sp-btn sp-btn-danger" onClick={() => handleRemoveMFA(f.id)}>Remove MFA</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ background: "#FFF8E6", border: "1.5px solid #F5E0A0", borderRadius: 9, padding: "12px 16px" }}>
+            ⚠️ <strong>MFA is not enabled on your account.</strong>
+            <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>Sign out and sign back in — you will be prompted to set up your authenticator app.</div>
+          </div>
+        )}
+      </div>
+
+      {/* User list */}
+      <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Team Members</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "var(--sub)", padding: "4px 10px", background: "var(--mist)", borderRadius: 99 }}>{users.length} users</span>
+            <button className="sp-btn sp-btn-primary" onClick={() => setShowAdd(s => !s)}>{showAdd ? "✕ Cancel" : "+ Add User"}</button>
+          </div>
+        </div>
+
+        {showAdd && (
+          <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--border)", background: "var(--mist)" }}>
+            <div style={{ fontFamily: "var(--fh)", fontSize: 13, fontWeight: 700, marginBottom: 12, color: "var(--navy)" }}>Create New User</div>
+            <div className="form-grid" style={{ marginBottom: 12 }}>
+              <div className="form-grid-item">
+                <label>Email Address</label>
+                <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="colleague@example.com" />
+              </div>
+              <div className="form-grid-item">
+                <label>Temporary Password</label>
+                <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="They can change this after login" />
+              </div>
+            </div>
+            <button className="sp-btn sp-btn-navy" onClick={handleAddUser} disabled={adding || !newEmail || !newPassword}>
+              {adding ? "Creating…" : "Create User"}
+            </button>
+            <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 8 }}>The user can log in immediately and will be prompted to set up MFA on first login.</div>
+          </div>
+        )}
+
+        {users.length === 0 && (
+          <div style={{ padding: "24px 18px", color: "var(--sub)", fontSize: 13 }}>Loading users…</div>
+        )}
+
+        {users.map(u => (
+          <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)", display: "flex", alignItems: "center", gap: 8 }}>
+                {u.email}
+                {u.email === currentUserEmail && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 99, color: "var(--sub)", fontWeight: 500 }}>You</span>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>
+                Last sign in: {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString("en-GB") : "Never"} ·
+                Created: {new Date(u.created_at).toLocaleDateString("en-GB")}
+                {u.factors?.length > 0
+                  ? <span style={{ color: "var(--success)", fontWeight: 600 }}> · 🔐 MFA on</span>
+                  : <span style={{ color: "#E65100" }}> · No MFA</span>
+                }
+              </div>
+            </div>
+            {u.email !== currentUserEmail && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleResetPassword(u.email)}>Reset Password</button>
+                <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleRemoveUser(u.id, u.email)}>Remove</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Invite by email */}
+      <div style={{ background: "var(--mist)", border: "1.5px dashed var(--mist2)", borderRadius: "var(--r)", padding: "20px" }}>
+        <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 14, color: "var(--navy)", marginBottom: 8 }}>✉️ Invite User by Email</div>
+        <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 12 }}>
+          Creates the account and sends an email with their temporary password and login link.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <input
+            style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 14, padding: "9px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", background: "#fff" }}
+            type="email"
+            placeholder="colleague@example.com"
+            value={inviteEmail}
+            onChange={e => setInviteEmail(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleInvite()}
+          />
+          <button className="sp-btn sp-btn-primary" onClick={handleInvite} disabled={inviting || !inviteEmail}>
+            {inviting ? "Sending…" : "Send Invite"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -4048,6 +4363,13 @@ export default function App() {
           onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
           onArchive={handleArchive}
           setPage={setPage}
+        />
+      );
+      case "users": return (
+        <UsersPage
+          token={token}
+          session={session}
+          toast={toast}
         />
       );
       case "archive": return (
