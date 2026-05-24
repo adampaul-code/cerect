@@ -1,4 +1,4 @@
-// Cerect v0.2 — Storage Management Platform
+// Cerect v0.3 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -117,6 +117,76 @@ async function getOrgDetails(orgId, token) {
   if (!r.ok) return null;
   const rows = await r.json();
   return rows?.[0] || null;
+}
+
+// ─── Data constants ───────────────────────────────────────────────────────────
+const SL = { occupied: "Occupied", arrears: "In Arrears", leaving: "Leaving", new: "New Customer", pending: "Pending", available: "Available" };
+const STATUSES = ["occupied", "arrears", "leaving", "new", "pending", "available"];
+const PAYMENTS = ["Monthly DD", "Stripe", "SO", "Pays Manually", "DD", "—", "Other"];
+const UC = { occupied: "uc-occ", arrears: "uc-arr", leaving: "uc-lea", new: "uc-new", pending: "uc-pen", available: "uc-avl" };
+const DC = { occupied: "d-occ", arrears: "d-arr", leaving: "d-lea", new: "d-new", pending: "d-pen", available: "d-avl" };
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
+async function dbGet(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&order=category,id&archived=neq.true&deleted_at=is.null`,
+    { headers: authH(token) }
+  );
+  if (r.status === 401) throw new Error("SESSION_EXPIRED");
+  return r.json();
+}
+
+async function dbUpsert(row, token) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify(row),
+  });
+  return r.json();
+}
+
+async function dbDelete(id, orgId, token) {
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
+    { method: "DELETE", headers: authH(token) }
+  );
+}
+
+async function areasGet(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/areas?org_id=eq.${orgId}&order=sort_order,name`,
+    { headers: authH(token) }
+  );
+  return r.json();
+}
+
+async function areasUpsert(name, category, sortOrder, orgId, token) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/areas`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify({ name, category, sort_order: sortOrder, org_id: orgId }),
+  });
+  return r.json();
+}
+
+async function areasDelete(name, orgId, token) {
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(name)}&org_id=eq.${orgId}`,
+    { method: "DELETE", headers: authH(token) }
+  );
+}
+
+async function areasUpdateOrder(names, orgId, token) {
+  for (let i = 0; i < names.length; i++) {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(names[i])}&org_id=eq.${orgId}`,
+      {
+        method: "PATCH",
+        headers: { ...authH(token), Prefer: "return=minimal" },
+        body: JSON.stringify({ sort_order: i }),
+      }
+    );
+  }
 }
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────
@@ -1033,7 +1103,92 @@ body {
 
 .btn-secondary:hover { background: var(--mist2); }
 
-/* ── Util ─────────────────────────────────────────────────────────────────── */
+/* ── Site plan ───────────────────────────────────────────────────────────── */
+.sp-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.sp-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sp-btn { display: inline-flex; align-items: center; gap: 6px; font-family: var(--fb); font-size: 12px; font-weight: 500; padding: 6px 12px; border-radius: 7px; border: 1.5px solid var(--border); background: #fff; color: var(--text); cursor: pointer; transition: all .15s; }
+.sp-btn:hover { border-color: var(--navy2); color: var(--navy); }
+.sp-btn.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+.sp-btn-primary { background: var(--gold); color: var(--navy); border-color: var(--gold); font-weight: 600; }
+.sp-btn-primary:hover { background: var(--gold2); border-color: var(--gold2); }
+.sp-btn-navy { background: var(--navy); color: #fff; border-color: var(--navy); }
+.sp-btn-navy:hover { background: var(--navy2); }
+.sp-btn-danger { background: #FFF0EE; color: var(--danger); border-color: #FFCDD2; }
+.sp-btn-danger:hover { background: #FFE0DC; }
+
+.sp-area { margin-bottom: 24px; }
+.sp-area-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px solid var(--gold); }
+.sp-area-title { font-family: var(--fh); font-size: 16px; font-weight: 700; color: var(--navy); }
+.sp-area-count { font-size: 11px; color: var(--sub); font-weight: 500; background: var(--mist); border: 1px solid var(--mist2); border-radius: 20px; padding: 2px 8px; margin-left: 8px; }
+.sp-area-actions { display: flex; align-items: center; gap: 6px; }
+.sp-drag-handle { cursor: grab; color: var(--sub); font-size: 16px; padding: 0 4px; opacity: 0.5; }
+.sp-drag-handle:hover { opacity: 1; }
+
+.ug { display: flex; flex-wrap: wrap; gap: 7px; }
+.uc { border-radius: 8px; padding: 9px 12px; min-width: 105px; cursor: pointer; border: 2px solid transparent; transition: all .17s; position: relative; }
+.uc:hover { transform: translateY(-2px); box-shadow: var(--sh); }
+.uc.sel { outline: 2.5px solid var(--gold); outline-offset: 2px; }
+.uc-occ { background: #EBF5F0; border-color: #BDE5D3; }
+.uc-arr { background: #FFF3E0; border-color: #FFCC80; }
+.uc-lea { background: #FFF0EE; border-color: #FFCDD2; }
+.uc-new { background: #FFFDE7; border-color: #FFF176; }
+.uc-pen { background: #F3E5F5; border-color: #CE93D8; }
+.uc-avl { background: #E3F2FD; border-color: #90CAF9; }
+.uid { font-family: var(--fh); font-size: 12px; font-weight: 700; color: var(--navy); }
+.uten { font-size: 10px; color: var(--sub); margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 110px; }
+.uprice { font-size: 10px; font-weight: 600; color: var(--navy); margin-top: 2px; }
+.udot { width: 6px; height: 6px; border-radius: 50%; position: absolute; top: 7px; right: 7px; }
+.d-occ { background: #1A7F5A; } .d-arr { background: #E65100; } .d-lea { background: #C0392B; }
+.d-new { background: #F9A825; } .d-pen { background: #AB47BC; } .d-avl { background: #1565C0; }
+
+.sp-legend { display: flex; gap: 12px; flex-wrap: wrap; }
+.sp-legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--sub); }
+.sp-legend-dot { width: 9px; height: 9px; border-radius: 3px; }
+
+.sp-detail { background: #fff; border: 1px solid var(--border); border-radius: var(--r2); padding: 18px 22px; margin-top: 14px; box-shadow: var(--sh); }
+.sp-detail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.sp-detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sp-detail-label { font-size: 10px; color: var(--sub); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+.sp-detail-val { font-size: 13px; font-weight: 600; color: var(--navy); margin-top: 2px; word-break: break-all; }
+
+.sp-form { background: var(--mist); border: 1.5px dashed var(--mist2); border-radius: var(--r); padding: 18px 20px; margin-top: 16px; }
+.sp-form-title { font-family: var(--fh); font-size: 13px; font-weight: 700; color: var(--navy); margin-bottom: 14px; }
+.sp-form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.sp-field { display: flex; flex-direction: column; gap: 4px; }
+.sp-field label { font-size: 10px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: .5px; }
+.sp-field input, .sp-field select { font-family: var(--fb); font-size: 13px; padding: 7px 10px; border: 1.5px solid var(--mist2); border-radius: 6px; outline: none; width: 100%; background: #fff; color: var(--text); }
+.sp-field input:focus, .sp-field select:focus { border-color: var(--navy2); }
+
+/* ── Edit Modal ──────────────────────────────────────────────────────────── */
+.modal-ov { position: fixed; inset: 0; background: rgba(11,30,61,.55); z-index: 200; display: flex; align-items: center; justify-content: center; animation: fi .15s; padding: 20px; }
+.modal { background: #fff; border-radius: 14px; width: 580px; max-width: 100%; box-shadow: var(--shl); max-height: 90vh; overflow-y: auto; animation: su .2s; }
+.modal-header { padding: 20px 22px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.modal-title { font-family: var(--fh); font-size: 16px; font-weight: 700; color: var(--navy); }
+.modal-close { background: var(--mist); border: none; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; color: var(--sub); }
+.modal-body { padding: 20px 22px; }
+.modal-footer { padding: 14px 22px; display: flex; gap: 9px; justify-content: flex-end; border-top: 1px solid var(--border); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-grid-item { display: flex; flex-direction: column; gap: 4px; }
+.form-grid-item.full { grid-column: span 2; }
+.form-grid-item label { font-size: 11px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: .5px; }
+.form-grid-item input, .form-grid-item select, .form-grid-item textarea { font-family: var(--fb); font-size: 13px; padding: 8px 11px; border: 1.5px solid var(--mist2); border-radius: 7px; outline: none; width: 100%; color: var(--text); }
+.form-grid-item input:focus, .form-grid-item select:focus, .form-grid-item textarea:focus { border-color: var(--gold); }
+.form-grid-item textarea { resize: vertical; min-height: 60px; }
+.form-section-label { font-size: 12px; font-weight: 700; color: var(--navy); border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; grid-column: span 2; }
+.modal-btn { display: inline-flex; align-items: center; gap: 6px; font-family: var(--fb); font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 7px; border: none; cursor: pointer; transition: all .15s; }
+.modal-btn-primary { background: var(--gold); color: var(--navy); }
+.modal-btn-primary:hover { background: var(--gold2); }
+.modal-btn-outline { background: transparent; color: var(--navy); border: 1.5px solid var(--border); }
+.modal-btn-outline:hover { border-color: var(--navy2); }
+.modal-btn-danger { background: #FFF0EE; color: var(--danger); border: 1.5px solid #FFCDD2; }
+.modal-btn-archive { background: #FFF8E6; color: var(--warning); border: 1.5px solid #FFE0A0; }
+.modal-btn:disabled { opacity: .5; cursor: not-allowed; }
+.unsaved-badge { font-size: 11px; color: var(--gold); font-weight: 600; }
+
+@keyframes fi { from { opacity: 0; } to { opacity: 1; } }
+@keyframes su { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+
 .flex { display: flex; }
 .flex-col { flex-direction: column; }
 .items-center { align-items: center; }
@@ -1435,6 +1590,607 @@ function ComingSoon({ title, icon }) {
   );
 }
 
+// ─── Small shared components ──────────────────────────────────────────────────
+function Pill({ s }) {
+  const cls = { occupied: "pill-occupied", arrears: "pill-arrears", leaving: "pill-leaving", new: "pill-new", pending: "pill-pending", available: "pill-available" };
+  return <span className={`pill ${cls[s] || "pill-occupied"}`}>{SL[s] || s}</span>;
+}
+
+function UCell({ u, sel, onClick }) {
+  const isVacant = u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant);
+  return (
+    <div
+      className={`uc ${UC[u.status] || "uc-avl"} ${sel ? "sel" : ""}`}
+      onClick={onClick}
+      title={isVacant ? `Unit ${u.id} — click to add tenant` : u.tenant || u.id}
+    >
+      <div className={`udot ${DC[u.status] || "d-avl"}`} />
+      <div className="uid">{u.id}</div>
+      {u.tenant && <div className="uten">{u.tenant}</div>}
+      {u.rent && <div className="uprice">£{u.rent}/mo</div>}
+      {isVacant && !u.tenant && <div style={{ fontSize: 8, opacity: 0.5, marginTop: 1 }}>+ tenant</div>}
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="sp-legend">
+      {[["#1A7F5A", "Occupied"], ["#E65100", "In Arrears"], ["#C0392B", "Leaving"], ["#F9A825", "New Customer"], ["#AB47BC", "Pending"], ["#1565C0", "Available"]].map(([c, l]) => (
+        <div key={l} className="sp-legend-item">
+          <div className="sp-legend-dot" style={{ background: c }} />
+          {l}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Edit Modal ───────────────────────────────────────────────────────────────
+function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [] }) {
+  const [form, setForm] = useState({ ...item });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [savedForm, setSavedForm] = useState({ ...item });
+  const [showNewArea, setShowNewArea] = useState(false);
+  const [newArea, setNewArea] = useState("");
+
+  function formsEqual(a, b) {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of keys) {
+      const av = a[k] == null ? "" : String(a[k]);
+      const bv = b[k] == null ? "" : String(b[k]);
+      if (av !== bv) return false;
+    }
+    return true;
+  }
+
+  const isDirty = !formsEqual(form, savedForm);
+  const u = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+  const n = k => e => setForm(f => ({ ...f, [k]: e.target.value === "" ? null : Number(e.target.value) }));
+
+  function handleClose() {
+    if (isDirty && !window.confirm("You have unsaved changes. Close without saving?")) return;
+    onClose();
+  }
+
+  async function save() {
+    setSaving(true);
+    await onSave(form);
+    setSavedForm({ ...form });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  const areaNames = areas.map(a => a.name);
+
+  return (
+    <div className="modal-ov" onClick={e => e.target === e.currentTarget && handleClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div className="modal-title">
+            {isNew ? "Add New Unit / Tenant" : `Edit — ${form.label || "Unit " + form.id}`}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {isDirty && <span className="unsaved-badge">● Unsaved changes</span>}
+            <button className="modal-close" onClick={handleClose}>✕</button>
+          </div>
+        </div>
+
+        <div className="modal-body">
+          <div className="form-grid">
+            {/* Category */}
+            {isNew && (
+              <div className="form-grid-item">
+                <label>Category</label>
+                <select value={form.category || "Storage"} onChange={u("category")}>
+                  {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+            )}
+
+            {/* Unit ID — Storage only */}
+            {isNew && form.category === "Storage" && (
+              <div className="form-grid-item">
+                <label>Unit ID *</label>
+                <input value={form.id || ""} onChange={u("id")} placeholder="e.g. 73, A4, FP32" />
+              </div>
+            )}
+
+            {/* Property name — Residential/Commercial */}
+            {(form.category === "Residential" || form.category === "Commercial") && (
+              <div className="form-grid-item full">
+                <label>Property Name</label>
+                <input
+                  value={form.label || ""}
+                  onChange={e => setForm(f => ({ ...f, label: e.target.value, ...(f.id ? {} : { id: e.target.value.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_") }) }))}
+                  placeholder="e.g. 14 High Street, Unit 3B"
+                />
+              </div>
+            )}
+
+            {/* Tenant name */}
+            <div className="form-grid-item full">
+              <label>Tenant Name</label>
+              <input value={form.tenant || ""} onChange={u("tenant")} />
+            </div>
+
+            {/* Address */}
+            <div className="form-grid-item full">
+              <label>Address</label>
+              <textarea value={form.address || ""} onChange={u("address")} placeholder="Tenant's home or business address…" style={{ minHeight: 60 }} />
+            </div>
+
+            {/* Contact */}
+            <div className="form-grid-item">
+              <label>Email</label>
+              <input type="email" value={form.email || ""} onChange={u("email")} />
+            </div>
+            <div className="form-grid-item">
+              <label>Phone</label>
+              <input value={form.phone || ""} onChange={u("phone")} />
+            </div>
+
+            {/* Status & Payment */}
+            <div className="form-grid-item">
+              <label>Status</label>
+              <select value={form.status || "occupied"} onChange={u("status")}>
+                {STATUSES.map(s => <option key={s} value={s}>{SL[s]}</option>)}
+              </select>
+            </div>
+            <div className="form-grid-item">
+              <label>Payment Method</label>
+              <select value={form.payment || ""} onChange={u("payment")}>
+                <option value="">— Select —</option>
+                {PAYMENTS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+
+            {/* Rent */}
+            <div className="form-grid-item">
+              <label>Rent (ex-VAT) £/mo</label>
+              <input type="number" value={form.rent || ""} onChange={n("rent")} />
+            </div>
+            <div className="form-grid-item">
+              <label>Rent (inc-VAT) £/mo</label>
+              <input type="number" value={form.vat_rent || ""} onChange={n("vat_rent")} />
+            </div>
+
+            {/* Deposits section */}
+            <div className="form-section-label">Deposits & Keys</div>
+            <div className="form-grid-item">
+              <label>Lock/Fob Deposit Paid</label>
+              <select value={form.lock_deposit_paid || ""} onChange={u("lock_deposit_paid")}>
+                <option value="">— Select —</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+                <option value="Cash">Cash</option>
+              </select>
+            </div>
+            <div className="form-grid-item">
+              <label>Lock/Fob Deposit Amount £</label>
+              <input type="number" value={form.lock_deposit_amount || ""} onChange={n("lock_deposit_amount")} placeholder="e.g. 50" />
+            </div>
+            <div className="form-grid-item">
+              <label>Tenant Deposit Held £</label>
+              <input type="number" value={form.tenant_deposit || ""} onChange={n("tenant_deposit")} placeholder="e.g. 20" />
+            </div>
+            <div className="form-grid-item">
+              <label>Key / Lock Number</label>
+              <input value={form.key_number || ""} onChange={u("key_number")} placeholder="e.g. 005, 33222" />
+            </div>
+
+            {/* Storage-specific */}
+            {form.category === "Storage" && (
+              <>
+                <div className="form-section-label">Unit Details</div>
+                <div className="form-grid-item">
+                  <label>Row / Location</label>
+                  {showNewArea ? (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 13, padding: "8px 11px", border: "1.5px solid var(--gold)", borderRadius: 7, outline: "none" }}
+                        value={newArea}
+                        onChange={e => setNewArea(e.target.value)}
+                        placeholder="New area name e.g. Row 8"
+                        autoFocus
+                        onKeyDown={e => {
+                          if (e.key === "Enter" && newArea.trim()) {
+                            setForm(f => ({ ...f, row_name: newArea.trim() }));
+                            setShowNewArea(false);
+                            setNewArea("");
+                          }
+                        }}
+                      />
+                      <button className="modal-btn modal-btn-primary" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => { if (newArea.trim()) { setForm(f => ({ ...f, row_name: newArea.trim() })); setShowNewArea(false); setNewArea(""); } }}>✓</button>
+                      <button className="modal-btn modal-btn-outline" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => { setShowNewArea(false); setNewArea(""); }}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <select
+                        style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 13, padding: "8px 11px", border: "1.5px solid var(--mist2)", borderRadius: 7, outline: "none" }}
+                        value={form.row_name || ""}
+                        onChange={e => setForm(f => ({ ...f, row_name: e.target.value }))}
+                      >
+                        <option value="">— Select area —</option>
+                        {areaNames.map(a => <option key={a} value={a}>{a}</option>)}
+                        {form.row_name && !areaNames.includes(form.row_name) && (
+                          <option value={form.row_name}>{form.row_name} (new)</option>
+                        )}
+                      </select>
+                      <button className="modal-btn modal-btn-outline" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setShowNewArea(true)} title="Add new area">+</button>
+                    </div>
+                  )}
+                </div>
+                <div className="form-grid-item">
+                  <label>Box Number</label>
+                  <input value={form.box_no || ""} onChange={u("box_no")} />
+                </div>
+                <div className="form-grid-item">
+                  <label>Size</label>
+                  <input value={form.size || ""} onChange={u("size")} placeholder="e.g. XL(20ft)" />
+                </div>
+              </>
+            )}
+
+            {/* Residential/Commercial — Lease Review */}
+            {(form.category === "Residential" || form.category === "Commercial") && (
+              <div className="form-grid-item">
+                <label>Lease Review Date</label>
+                <input type="date" value={form.review || ""} onChange={u("review")} />
+              </div>
+            )}
+
+            {/* Dates */}
+            <div className="form-grid-item">
+              <label>Move-in Date</label>
+              <input type="date" value={form.move_in_date || ""} onChange={u("move_in_date")} />
+            </div>
+            <div className="form-grid-item">
+              <label>Move-out Date</label>
+              <input type="date" value={form.move_out_date || ""} onChange={e => {
+                const val = e.target.value;
+                setForm(f => ({ ...f, move_out_date: val, status: val && new Date(val) <= new Date() ? "leaving" : f.status }));
+              }} />
+            </div>
+
+            {/* Notes */}
+            <div className="form-grid-item full">
+              <label>Notes</label>
+              <textarea value={form.notes || ""} onChange={u("notes")} placeholder="Additional notes, special requirements…" />
+            </div>
+          </div>
+        </div>
+
+        <div className="modal-footer">
+          {!isNew && <button className="modal-btn modal-btn-danger" onClick={() => { onDelete(form.id); onClose(); }}>Delete</button>}
+          {!isNew && onArchive && <button className="modal-btn modal-btn-archive" onClick={() => { onArchive(form.id); onClose(); }}>📦 Archive</button>}
+          <button className="modal-btn modal-btn-outline" onClick={handleClose}>Close</button>
+          <button className="modal-btn modal-btn-primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : saved ? "✅ Saved!" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Site Plan ────────────────────────────────────────────────────────────────
+function SitePlanPage({ data, areas, onEdit, onAdd, onDelete, onRenameRow, onDeleteRow, onSaveAreaOrder, onAddArea, onSaveUnitOrder }) {
+  const [sel, setSel] = useState(null);
+  const [filt, setFilt] = useState("all");
+  const [showAddUnit, setShowAddUnit] = useState(false);
+  const [showAddArea, setShowAddArea] = useState(false);
+  const [editingRow, setEditingRow] = useState(null);
+  const [editingRowName, setEditingRowName] = useState("");
+  const [newAreaName, setNewAreaName] = useState("");
+  const [newUnit, setNewUnit] = useState({ id: "", category: "Storage", row_name: "", size: "", box_no: "", status: "available" });
+  const [dragOver, setDragOver] = useState(null);
+  const [dragOverUnit, setDragOverUnit] = useState(null);
+  const dragRow = useRef(null);
+  const dragUnit = useRef(null);
+  const detailRef = useRef(null);
+
+  const rowOrder = areas.map(a => a.name);
+  const stor = data.filter(d => d.category === "Storage");
+  const fu = arr => filt === "all" ? arr : arr.filter(u => u.status === filt);
+  const selU = stor.find(u => u.id === sel);
+  const nu = k => e => setNewUnit(f => ({ ...f, [k]: e.target.value }));
+
+  // ── Area drag ──
+  function handleAreaDragStart(e, row) { dragRow.current = row; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row); }
+  function handleAreaDragOver(e, row) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(row); }
+  function handleAreaDrop(e, targetRow) {
+    e.preventDefault();
+    const fromRow = dragRow.current || (() => { try { return e.dataTransfer.getData("text/plain"); } catch { return null; } })();
+    dragRow.current = null; setDragOver(null);
+    if (!fromRow || fromRow === targetRow) return;
+    const newOrder = [...rowOrder];
+    const fromIdx = newOrder.indexOf(fromRow);
+    const toIdx = newOrder.indexOf(targetRow);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const reordered = [...newOrder];
+    reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, fromRow);
+    if (onSaveAreaOrder) onSaveAreaOrder(reordered);
+  }
+  function handleAreaDragEnd() { dragRow.current = null; setDragOver(null); }
+
+  // ── Unit drag ──
+  function handleUnitDragStart(e, unit) { dragUnit.current = unit; e.dataTransfer.effectAllowed = "move"; }
+  function handleUnitDrop(e, targetId, rowUnits, targetRow) {
+    e.preventDefault(); e.stopPropagation();
+    const fromUnit = dragUnit.current;
+    if (!fromUnit || fromUnit.id === targetId) { setDragOverUnit(null); return; }
+    const updates = [];
+    const targetSorted = [...rowUnits].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const toIdx = targetSorted.findIndex(u => u.id === targetId);
+    if (fromUnit.row_name === targetRow) {
+      const withoutFrom = targetSorted.filter(u => u.id !== fromUnit.id);
+      withoutFrom.splice(toIdx, 0, fromUnit);
+      withoutFrom.forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: targetRow }));
+    } else {
+      data.filter(u => u.row_name === fromUnit.row_name && u.id !== fromUnit.id)
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+        .forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: u.row_name }));
+      const newTarget = [...targetSorted];
+      newTarget.splice(toIdx < 0 ? newTarget.length : toIdx, 0, { ...fromUnit, row_name: targetRow });
+      newTarget.forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: targetRow }));
+    }
+    if (onSaveUnitOrder) onSaveUnitOrder(updates);
+    dragUnit.current = null; setDragOverUnit(null);
+  }
+
+  function selectUnit(id) {
+    setSel(prev => {
+      if (prev === id) return null;
+      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+      return id;
+    });
+  }
+
+  function submitNewUnit() {
+    if (!newUnit.id.trim()) { alert("Please enter a Unit ID"); return; }
+    const exists = stor.find(u => u.id === newUnit.id.trim());
+    if (exists) { alert(`Unit "${newUnit.id.trim()}" already exists in ${exists.row_name || "this area"}. Please choose a different ID.`); return; }
+    onAdd({ ...newUnit, id: newUnit.id.trim(), rent: null, vat_rent: null, email: null, phone: null, label: null, review: null, notes: null, tenant: null });
+    setNewUnit({ id: "", category: "Storage", row_name: "", size: "", box_no: "", status: "available" });
+    setShowAddUnit(false);
+  }
+
+  function confirmRenameRow() {
+    if (!editingRowName.trim()) return;
+    onRenameRow(editingRow, editingRowName.trim());
+    setEditingRow(null);
+  }
+
+  function confirmDeleteRow(row) {
+    const units = stor.filter(u => u.row_name === row);
+    const occupied = units.filter(u => u.tenant);
+    const msg = occupied.length > 0
+      ? `Delete "${row}"?\n\nThis area has ${units.length} unit(s), ${occupied.length} of which ${occupied.length === 1 ? "is" : "are"} occupied:\n${occupied.map(u => `• Unit ${u.id} — ${u.tenant}`).join("\n")}\n\nThis cannot be undone.`
+      : `Delete "${row}" and all ${units.length} unit(s) in it?\n\nThis cannot be undone.`;
+    if (window.confirm(msg)) onDeleteRow(row);
+  }
+
+  async function confirmAddArea() {
+    if (!newAreaName.trim()) return;
+    if (onAddArea) await onAddArea(newAreaName.trim());
+    setShowAddArea(false);
+    setNewAreaName("");
+  }
+
+  return (
+    <div className="page">
+      {/* Toolbar */}
+      <div className="sp-toolbar">
+        <Legend />
+        <div className="sp-filters">
+          {["all", ...STATUSES].map(f => (
+            <button key={f} className={`sp-btn ${filt === f ? "active" : ""}`} onClick={() => setFilt(f)}>
+              {f === "all" ? "All" : SL[f]}
+            </button>
+          ))}
+          {filt === "all" && (
+            <>
+              <button className="sp-btn sp-btn-primary" onClick={() => { setShowAddUnit(s => !s); setShowAddArea(false); }}>
+                {showAddUnit ? "✕ Cancel" : "+ Add Unit"}
+              </button>
+              <button className="sp-btn sp-btn-navy" onClick={() => { setShowAddArea(s => !s); setShowAddUnit(false); }}>
+                {showAddArea ? "✕ Cancel" : "+ Add Area"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Add area form */}
+      {showAddArea && (
+        <div className="sp-form">
+          <div className="sp-form-title">Add New Area</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              className="onboard-input"
+              style={{ flex: 1, maxWidth: 320 }}
+              value={newAreaName}
+              onChange={e => setNewAreaName(e.target.value)}
+              placeholder="e.g. Row 7, North Block, Main Barn"
+              onKeyDown={e => e.key === "Enter" && confirmAddArea()}
+              autoFocus
+            />
+            <button className="sp-btn sp-btn-primary" onClick={confirmAddArea}>Create Area</button>
+          </div>
+        </div>
+      )}
+
+      {/* Add unit form */}
+      {showAddUnit && (
+        <div className="sp-form" style={{ marginTop: 12 }}>
+          <div className="sp-form-title">Add New Unit to Site Plan</div>
+          <div className="sp-form-grid">
+            <div className="sp-field"><label>Unit ID *</label><input value={newUnit.id} onChange={nu("id")} placeholder="e.g. 73, A4" /></div>
+            <div className="sp-field">
+              <label>Area *</label>
+              <select value={newUnit.row_name} onChange={nu("row_name")}>
+                <option value="">— Select area —</option>
+                {rowOrder.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div className="sp-field">
+              <label>Status</label>
+              <select value={newUnit.status} onChange={nu("status")}>
+                {STATUSES.map(s => <option key={s} value={s}>{SL[s]}</option>)}
+              </select>
+            </div>
+            <div className="sp-field"><label>Size (optional)</label><input value={newUnit.size} onChange={nu("size")} placeholder="e.g. XL(20ft)" /></div>
+          </div>
+          <p style={{ fontSize: 11, color: "var(--sub)", marginTop: 10 }}>Tenant details, rent, and other info can be added by clicking Edit on the unit afterwards.</p>
+          <button className="sp-btn sp-btn-primary" style={{ marginTop: 10 }} onClick={submitNewUnit}>Add Unit</button>
+        </div>
+      )}
+
+      {/* Area rows */}
+      {rowOrder.map(row => {
+        const all = stor.filter(u => u.row_name === row);
+        const isDragTarget = dragOver === row && dragRow.current && !dragUnit.current;
+        return (
+          <div
+            key={row}
+            className="sp-area"
+            style={{ opacity: isDragTarget ? 0.5 : 1, outline: isDragTarget ? "2px dashed var(--gold)" : "none", borderRadius: 8, transition: "opacity .15s" }}
+            onDragOver={e => { if (dragRow.current && !dragUnit.current) handleAreaDragOver(e, row); else e.preventDefault(); }}
+            onDragEnter={e => { e.preventDefault(); if (dragRow.current && !dragUnit.current) setDragOver(row); }}
+            onDrop={e => { if (dragUnit.current) return; handleAreaDrop(e, row); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+          >
+            <div className="sp-area-header">
+              {editingRow === row ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    value={editingRowName}
+                    onChange={e => setEditingRowName(e.target.value)}
+                    style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "6px 10px", border: "1.5px solid var(--gold)", borderRadius: 7, outline: "none", width: 200 }}
+                    onKeyDown={e => e.key === "Enter" && confirmRenameRow()}
+                    autoFocus
+                  />
+                  <button className="sp-btn sp-btn-primary" style={{ fontSize: 11, padding: "5px 10px" }} onClick={confirmRenameRow}>✓ Save</button>
+                  <button className="sp-btn" style={{ fontSize: 11, padding: "5px 10px" }} onClick={() => setEditingRow(null)}>✕</button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span
+                    className="sp-drag-handle"
+                    draggable
+                    onDragStart={e => handleAreaDragStart(e, row)}
+                    onDragEnd={handleAreaDragEnd}
+                    title="Drag to reorder"
+                  >⠿</span>
+                  <span className="sp-area-title">{row}</span>
+                  <span className="sp-area-count">{all.length} units</span>
+                </div>
+              )}
+              {editingRow !== row && filt === "all" && (
+                <div className="sp-area-actions">
+                  <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => { setEditingRow(row); setEditingRowName(row); }}>✏️ Rename</button>
+                  <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => confirmDeleteRow(row)}>🗑️ Delete Area</button>
+                </div>
+              )}
+            </div>
+
+            <div className="ug">
+              {fu([...all].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))).map(u => (
+                <div
+                  key={u.id}
+                  draggable={filt === "all"}
+                  onDragStart={e => handleUnitDragStart(e, u)}
+                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverUnit(u.id); }}
+                  onDrop={e => handleUnitDrop(e, u.id, [...all].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), row)}
+                  onDragEnd={() => { dragUnit.current = null; setDragOverUnit(null); }}
+                  style={{ opacity: dragOverUnit === u.id && dragUnit.current?.id !== u.id ? 0.5 : 1, outline: dragOverUnit === u.id && dragUnit.current?.id !== u.id ? "2px dashed var(--gold)" : "none", borderRadius: 8 }}
+                >
+                  <UCell u={u} sel={sel === u.id} onClick={() => selectUnit(u.id)} />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Unassigned units */}
+      {stor.filter(u => !u.row_name).length > 0 && (
+        <div className="sp-area">
+          <div className="sp-area-header">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 700, color: "var(--danger)" }}>⚠️ Unassigned</span>
+              <span className="sp-area-count" style={{ background: "#FFF0EE", borderColor: "#FFCDD2", color: "var(--danger)" }}>{stor.filter(u => !u.row_name).length} units — no area set</span>
+            </div>
+          </div>
+          <div className="ug">
+            {fu(stor.filter(u => !u.row_name)).map(u => <UCell key={u.id} u={u} sel={sel === u.id} onClick={() => selectUnit(u.id)} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {rowOrder.length === 0 && (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--sub)" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🏭</div>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 18, fontWeight: 600, marginBottom: 8, color: "var(--text)" }}>No areas yet</div>
+          <div style={{ fontSize: 14, marginBottom: 24 }}>Start by adding an area, then add your storage units to it.</div>
+          <button className="sp-btn sp-btn-navy" onClick={() => setShowAddArea(true)}>+ Add Your First Area</button>
+        </div>
+      )}
+
+      {/* Detail panel */}
+      {selU && (
+        <div className="sp-detail" ref={detailRef}>
+          <div className="sp-detail-header">
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15 }}>Unit {selU.id}</span>
+              <Pill s={selU.status} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="sp-btn sp-btn-primary" onClick={() => onEdit(selU)}>✏️ Edit</button>
+              <button className="sp-btn sp-btn-danger" onClick={() => {
+                const msg = selU.tenant
+                  ? `Delete Unit ${selU.id}? This cannot be undone.`
+                  : `Permanently delete empty Unit ${selU.id}? This cannot be undone.`;
+                if (window.confirm(msg)) { onDelete(selU.id); setSel(null); }
+              }}>🗑️ Delete</button>
+              <button className="sp-btn" onClick={() => setSel(null)}>✕ Close</button>
+            </div>
+          </div>
+          <div className="sp-detail-grid">
+            {[
+              ["Box Ref", selU.box_no || "—"],
+              ["Size", selU.size || "—"],
+              ["Area", selU.row_name || "—"],
+              ["Tenant", selU.tenant || "Vacant"],
+              ["Payment", selU.payment || "—"],
+              ["Rent (ex-VAT)", selU.rent ? "£" + selU.rent : "—"],
+              ["Rent (inc-VAT)", selU.vat_rent ? "£" + selU.vat_rent : "—"],
+              ["Email", selU.email || "—"],
+              ["Phone", selU.phone || "—"],
+              ["Key / Lock No.", selU.key_number || "—"],
+              ["Lock Deposit Paid", selU.lock_deposit_paid || "—"],
+              ["Lock Deposit Amt", selU.lock_deposit_amount ? "£" + selU.lock_deposit_amount : "—"],
+              ["Tenant Deposit", selU.tenant_deposit ? "£" + selU.tenant_deposit : "—"],
+              ["Move-in", selU.move_in_date || "—"],
+              ["Notes", selU.notes || "—"],
+            ].map(([k, v]) => (
+              <div key={k}>
+                <div className="sp-detail-label">{k}</div>
+                <div className="sp-detail-val">{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -1603,9 +2359,91 @@ function OnboardingPage({ session, onComplete }) {
 }
 
 // ─── Dashboard Page ───────────────────────────────────────────────────────
-function DashboardPage({ session, org }) {
+function DashboardPage({ session, org, data = [] }) {
   const email = session?.user?.email || "";
   const orgName = org?.name || "Your site";
+
+  const stor = data.filter(d => d.category === "Storage");
+  const res = data.filter(d => d.category === "Residential");
+  const com = data.filter(d => d.category === "Commercial");
+  const activeStatuses = ["occupied", "arrears", "new"];
+  const occ = stor.filter(u => activeStatuses.includes(u.status)).length;
+  const totalRent = data.filter(u => u.rent && activeStatuses.includes(u.status)).reduce((a, b) => a + (Number(b.rent) || 0), 0);
+  const occRate = stor.length > 0 ? Math.round(occ / stor.length * 100) : 0;
+
+  return (
+    <div className="page">
+      <div className="mb-6">
+        <h1 style={{ fontFamily: "var(--fh)", fontSize: 22, fontWeight: 700, marginBottom: 4 }}>
+          Dashboard
+        </h1>
+        <p style={{ fontSize: 14, color: "var(--sub)" }}>
+          {orgName}
+        </p>
+      </div>
+
+      <div className="kpi-grid">
+        {[
+          { label: "Storage Units", value: stor.length || "—", meta: `${occ} occupied` },
+          { label: "Occupancy Rate", value: stor.length ? `${occRate}%` : "—", meta: `${stor.length - occ} vacant` },
+          { label: "Monthly Revenue", value: totalRent ? `£${totalRent.toLocaleString()}` : "—", meta: "All categories ex-VAT" },
+          { label: "Properties", value: res.length + com.length || "—", meta: `${res.length} residential, ${com.length} commercial` },
+        ].map(k => (
+          <div className="kpi-card" key={k.label}>
+            <div className="kpi-label">{k.label}</div>
+            <div className="kpi-value">{k.value}</div>
+            <div className="kpi-meta">{k.meta}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-title">Getting started</div>
+          <div className="card-sub">Complete these steps to set up your site</div>
+          {[
+            { step: 1, label: "Business set up", done: true },
+            { step: 2, label: "Set up your site plan", done: stor.length > 0 },
+            { step: 3, label: "Add your first tenant", done: data.some(u => u.tenant) },
+            { step: 4, label: "Record a payment", done: false },
+          ].map(s => (
+            <div key={s.step} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+              <div style={{
+                width: 24, height: 24, borderRadius: "50%",
+                background: s.done ? "var(--success)" : "var(--mist)",
+                border: s.done ? "none" : "1.5px solid var(--mist2)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 11, fontWeight: 600,
+                color: s.done ? "#fff" : "var(--sub)",
+                flexShrink: 0,
+              }}>
+                {s.done ? "✓" : s.step}
+              </div>
+              <span style={{ fontSize: 14, color: s.done ? "var(--sub)" : "var(--text)" }}>{s.label}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="card">
+          <div className="card-title">Your account</div>
+          <div className="card-sub">Organisation details</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {[
+              { label: "Organisation", value: orgName },
+              { label: "Email", value: email },
+              { label: "Plan", value: org?.plan === "trial" ? "Trial" : (org?.plan || "Trial") },
+            ].map(r => (
+              <div key={r.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
+                <span style={{ color: "var(--sub)" }}>{r.label}</span>
+                <span style={{ fontWeight: 500 }}>{r.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
   return (
     <div className="page">
@@ -1749,8 +2587,16 @@ export default function App() {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [data, setData] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [isNew, setIsNew] = useState(false);
   const { toasts, toast } = useToast();
   const refreshRef = useRef(null);
+
+  const token = session?.access_token;
+  const orgId = org?.id;
 
   // Restore session
   useEffect(() => {
@@ -1779,6 +2625,36 @@ export default function App() {
     });
   }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Load data whenever org is ready
+  const loadData = useCallback(async () => {
+    if (!token || !orgId) return;
+    setDataLoading(true);
+    try {
+      const [rows, areaRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token)]);
+      setData(Array.isArray(rows) ? rows : []);
+      if (Array.isArray(areaRows)) {
+        setAreas(areaRows);
+        // Auto-populate areas from existing tenants if areas table is empty
+        if (areaRows.length === 0 && Array.isArray(rows) && rows.length > 0) {
+          const storageRows = [...new Set(rows.filter(d => d.category === "Storage" && d.row_name).map(d => d.row_name))];
+          for (let i = 0; i < storageRows.length; i++) {
+            await areasUpsert(storageRows[i], "Storage", i, orgId, token);
+          }
+          const fresh = await areasGet(orgId, token);
+          setAreas(fresh || []);
+        }
+      }
+    } catch (e) {
+      if (e?.message === "SESSION_EXPIRED") {
+        toast("Your session has expired — please sign in again", "error");
+        handleSignOut();
+      }
+    }
+    setDataLoading(false);
+  }, [token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { loadData(); }, [loadData]);
+
   // Auto-refresh session every 50 minutes
   useEffect(() => {
     if (!session) return;
@@ -1794,6 +2670,13 @@ export default function App() {
     return () => clearInterval(refreshRef.current);
   }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Escape key closes modal
+  useEffect(() => {
+    const handler = e => { if (e.key === "Escape" && editItem) setEditItem(null); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editItem]);
+
   function handleLogin(s) {
     setSession(s);
     localStorage.setItem("cerect_session", JSON.stringify(s));
@@ -1806,6 +2689,8 @@ export default function App() {
     }
     setSession(null);
     setOrg(null);
+    setData([]);
+    setAreas([]);
     setNeedsOnboarding(false);
     localStorage.removeItem("cerect_session");
     setPage("dashboard");
@@ -1817,11 +2702,116 @@ export default function App() {
     toast("Welcome to Cerect! Your account is ready.", "success");
   }
 
+  // ── Site Plan handlers ────────────────────────────────────────────────────
+  async function handleSave(form) {
+    try {
+      const row = { ...form, org_id: orgId };
+      await dbUpsert(row, token);
+      const fresh = await dbGet(orgId, token);
+      setData(Array.isArray(fresh) ? fresh : []);
+      toast("Saved", "success");
+    } catch { toast("Save failed", "error"); }
+  }
+
+  async function handleDelete(id) {
+    try {
+      await dbDelete(id, orgId, token);
+      setData(d => d.filter(u => u.id !== id));
+      toast("Unit deleted", "success");
+    } catch { toast("Delete failed", "error"); }
+  }
+
+  async function handleAddUnit(unit) {
+    try {
+      const row = { ...unit, org_id: orgId };
+      await dbUpsert(row, token);
+      setData(d => [...d, row]);
+      if (unit.row_name) {
+        const exists = areas.some(a => a.name === unit.row_name);
+        if (!exists) {
+          await areasUpsert(unit.row_name, "Storage", areas.length, orgId, token);
+          const fresh = await areasGet(orgId, token);
+          setAreas(fresh || []);
+        }
+      }
+      toast("Unit added", "success");
+    } catch { toast("Could not add unit — check the ID is unique", "error"); }
+  }
+
+  async function handleRenameRow(oldName, newName) {
+    try {
+      const units = data.filter(u => u.row_name === oldName);
+      for (const u of units) { await dbUpsert({ ...u, row_name: newName, org_id: orgId }, token); }
+      setData(d => d.map(u => u.row_name === oldName ? { ...u, row_name: newName } : u));
+      const area = areas.find(a => a.name === oldName);
+      if (area) {
+        await areasDelete(oldName, orgId, token);
+        await areasUpsert(newName, "Storage", area.sort_order, orgId, token);
+        const fresh = await areasGet(orgId, token);
+        setAreas(fresh || []);
+      }
+      toast(`Renamed "${oldName}" to "${newName}"`, "success");
+    } catch { toast("Rename failed", "error"); }
+  }
+
+  async function handleDeleteRow(rowName) {
+    try {
+      const units = data.filter(u => u.row_name === rowName);
+      for (const u of units) { await dbDelete(u.id, orgId, token); }
+      setData(d => d.filter(u => u.row_name !== rowName));
+      await areasDelete(rowName, orgId, token);
+      const fresh = await areasGet(orgId, token);
+      setAreas(fresh || []);
+      toast(`Deleted area "${rowName}"`, "success");
+    } catch { toast("Delete failed", "error"); }
+  }
+
+  async function handleSaveAreaOrder(names) {
+    try {
+      await areasUpdateOrder(names, orgId, token);
+      const fresh = await areasGet(orgId, token);
+      setAreas(fresh || []);
+    } catch { toast("Could not reorder areas", "error"); }
+  }
+
+  async function handleAddArea(name) {
+    try {
+      await areasUpsert(name, "Storage", areas.length, orgId, token);
+      const fresh = await areasGet(orgId, token);
+      setAreas(fresh || []);
+      toast(`Area "${name}" created`, "success");
+    } catch { toast("Could not create area", "error"); }
+  }
+
+  async function handleSaveUnitOrder(updates) {
+    try {
+      for (const u of updates) {
+        await dbUpsert({ ...data.find(d => d.id === u.id), ...u, org_id: orgId }, token);
+      }
+      const fresh = await dbGet(orgId, token);
+      setData(Array.isArray(fresh) ? fresh : []);
+    } catch { toast("Could not reorder units", "error"); }
+  }
+
   const pageTitle = NAV.find(n => n.id === page)?.label || "Dashboard";
 
   function renderPage() {
     switch (page) {
-      case "dashboard": return <DashboardPage session={session} org={org} />;
+      case "dashboard": return <DashboardPage session={session} org={org} data={data} />;
+      case "siteplan": return (
+        <SitePlanPage
+          data={data}
+          areas={areas}
+          onEdit={r => { setEditItem(r); setIsNew(false); }}
+          onAdd={handleAddUnit}
+          onDelete={handleDelete}
+          onRenameRow={handleRenameRow}
+          onDeleteRow={handleDeleteRow}
+          onSaveAreaOrder={handleSaveAreaOrder}
+          onAddArea={handleAddArea}
+          onSaveUnitOrder={handleSaveUnitOrder}
+        />
+      );
       default: return (
         <div className="page">
           <ComingSoon title={pageTitle} />
@@ -1866,9 +2856,26 @@ export default function App() {
             <div className="topbar-title">{pageTitle}</div>
             <div className="topbar-org">{org?.name || "Trial"}</div>
           </div>
-          {renderPage()}
+          {dataLoading && page === "siteplan" ? (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--sub)" }}>Loading site plan…</div>
+          ) : renderPage()}
         </div>
       </div>
+
+      {/* Edit Modal */}
+      {editItem && (
+        <EditModal
+          item={editItem}
+          isNew={isNew}
+          areas={areas}
+          existingIds={data}
+          onClose={() => setEditItem(null)}
+          onSave={async form => { await handleSave(form); }}
+          onDelete={async id => { await handleDelete(id); setEditItem(null); }}
+          onArchive={null}
+        />
+      )}
+
       <div className="toast-wrap">
         {toasts.map(t => (
           <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>
