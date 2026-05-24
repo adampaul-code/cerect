@@ -1874,8 +1874,17 @@ function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = 
         </div>
 
         <div className="modal-footer">
-          {!isNew && <button className="modal-btn modal-btn-danger" onClick={() => { onDelete(form.id); onClose(); }}>Delete</button>}
-          {!isNew && onArchive && <button className="modal-btn modal-btn-archive" onClick={() => { onArchive(form.id); onClose(); }}>📦 Archive</button>}
+          {!isNew && !form.tenant && (
+            <button className="modal-btn modal-btn-danger" onClick={() => {
+              if (!window.confirm(`Permanently delete unit ${form.id}? This cannot be undone.`)) return;
+              onDelete(form.id); onClose();
+            }}>🗑️ Delete Unit</button>
+          )}
+          {!isNew && form.tenant && onArchive && (
+            <button className="modal-btn modal-btn-archive" onClick={() => { onArchive(form.id); onClose(); }}>
+              📦 Archive Tenant
+            </button>
+          )}
           <button className="modal-btn modal-btn-outline" onClick={handleClose}>Close</button>
           <button className="modal-btn modal-btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : saved ? "✅ Saved!" : "Save Changes"}
@@ -3310,18 +3319,53 @@ function ArchivePage({ orgId, token, data, toast, onDataRefresh }) {
         return;
       }
 
-      if (!window.confirm(`Restore ${tenantData?.tenant || unitId} to unit ${unitId}?`)) return;
+      if (!window.confirm(`Restore ${tenantData?.tenant || unitId} to unit ${unitId}?\n\nThe unit is currently vacant. Their details and documents will be restored.`)) return;
 
+      // Restore tenant record
       const restored = { ...tenantData, id: unitId, org_id: orgId, archived: false, deleted_at: null, deleted_data: null };
       await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
         method: "POST",
         headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
         body: JSON.stringify(restored),
       });
+
+      // Move documents back from archive folder to unit folder
+      const safeUnitId = String(unitId).replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+      let docsRestored = 0;
+      try {
+        const docsR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+          method: "POST",
+          headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prefix: `archive/${archiveId}/`, limit: 200 }),
+        });
+        const docs = await docsR.json();
+        for (const doc of (Array.isArray(docs) ? docs : []).filter(d => d.id)) {
+          const srcPath = `archive/${archiveId}/${doc.name}`;
+          const dstPath = `${safeUnitId}/${doc.name}`;
+          const copyR = await fetch(`${SUPABASE_URL}/storage/v1/object/copy`, {
+            method: "POST",
+            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ bucketId: "documents", sourceKey: srcPath, destinationKey: dstPath, destinationBucket: "documents" }),
+          });
+          if (copyR.ok) {
+            await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(srcPath)}&org_id=eq.${orgId}`, {
+              method: "PATCH",
+              headers: { ...authH(token), Prefer: "return=minimal" },
+              body: JSON.stringify({ file_path: dstPath, tenant_id: safeUnitId }),
+            });
+            await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${srcPath}`, {
+              method: "DELETE",
+              headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
+            });
+            docsRestored++;
+          }
+        }
+      } catch {}
+
       await archiveDelete(archiveId, token);
-      toast(`Restored — ${tenantData?.tenant || tenantData?.label || unitId}`, "success");
       await reload();
       if (onDataRefresh) onDataRefresh();
+      toast(`Restored ${tenantData?.tenant || unitId} · ${docsRestored} document${docsRestored !== 1 ? "s" : ""} restored`, "success");
     } catch { toast("Restore failed", "error"); }
   }
 
@@ -4759,13 +4803,49 @@ export default function App() {
     try {
       const unit = data.find(u => u.id === id);
       if (!unit) return;
-      // Save to archived_tenants
-      await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants`, {
+
+      // Save full tenant record to archived_tenants
+      const archiveR = await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants`, {
         method: "POST",
-        headers: { ...authH(token), Prefer: "return=minimal" },
+        headers: { ...authH(token), Prefer: "return=representation" },
         body: JSON.stringify({ org_id: orgId, original_unit_id: String(id), tenant_data: unit }),
       });
-      // Clear tenant from unit but keep the unit
+      const archiveRows = await archiveR.json();
+      const archiveRecord = Array.isArray(archiveRows) ? archiveRows[0] : archiveRows;
+
+      // Move documents to archive folder if we got an archive ID
+      if (archiveRecord?.id) {
+        const safeId = String(id).replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+        try {
+          const docsR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+            method: "POST",
+            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ prefix: safeId + "/", limit: 200 }),
+          });
+          const docs = await docsR.json();
+          for (const doc of (Array.isArray(docs) ? docs : []).filter(d => d.id)) {
+            const srcPath = `${safeId}/${doc.name}`;
+            const dstPath = `archive/${archiveRecord.id}/${doc.name}`;
+            await fetch(`${SUPABASE_URL}/storage/v1/object/copy`, {
+              method: "POST",
+              headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ bucketId: "documents", sourceKey: srcPath, destinationKey: dstPath, destinationBucket: "documents" }),
+            });
+            // Update document tag paths
+            await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(srcPath)}&org_id=eq.${orgId}`, {
+              method: "PATCH",
+              headers: { ...authH(token), Prefer: "return=minimal" },
+              body: JSON.stringify({ file_path: dstPath }),
+            });
+            await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${srcPath}`, {
+              method: "DELETE",
+              headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
+            });
+          }
+        } catch {}
+      }
+
+      // Clear tenant from unit but keep the unit as Available
       await dbUpsert({
         ...unit,
         org_id: orgId,
@@ -4775,10 +4855,11 @@ export default function App() {
         lock_deposit_paid: null, lock_deposit_amount: null,
         tenant_deposit: null, key_number: null, notes: null, review: null,
       }, token);
+
       const fresh = await dbGet(orgId, token);
       setData(Array.isArray(fresh) ? fresh : []);
-      toast("Tenant archived", "success");
-    } catch { toast("Archive failed", "error"); }
+      toast(`${unit.tenant || unit.id} archived — unit is now available`, "success");
+    } catch (e) { toast("Archive failed: " + e.message, "error"); }
   }
 
   async function handleStatusUpdate(id, newStatus) {
