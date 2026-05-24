@@ -1,4 +1,4 @@
-// Cerect v0.3 — Storage Management Platform
+// Cerect v0.4 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -2191,6 +2191,226 @@ function SitePlanPage({ data, areas, onEdit, onAdd, onDelete, onRenameRow, onDel
   );
 }
 
+// ─── Tenants Page ────────────────────────────────────────────────────────────
+const DEFAULT_COLS = [
+  { key: "unit",     label: "Unit" },
+  { key: "category", label: "Category" },
+  { key: "tenant",   label: "Tenant" },
+  { key: "size",     label: "Size" },
+  { key: "payment",  label: "Payment" },
+  { key: "exvat",    label: "Ex-VAT" },
+  { key: "incvat",   label: "Inc-VAT" },
+  { key: "email",    label: "Email" },
+  { key: "status",   label: "Status" },
+];
+
+function TenantsPage({ data, onEdit, onAdd, onArchive, setPage }) {
+  const [q, setQ] = useState("");
+  const [filt, setFilt] = useState("all");
+  const [cat, setCat] = useState("all");
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const [selected, setSelected] = useState(new Set());
+  const [cols, setCols] = useState(() => {
+    try { const s = localStorage.getItem("cerect_col_order"); return s ? JSON.parse(s) : DEFAULT_COLS; } catch { return DEFAULT_COLS; }
+  });
+  const dragCol = useRef(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  function toggleSelect(id) { setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
+  function toggleAll() { setSelected(s => s.size === sorted.length ? new Set() : new Set(sorted.map(t => t.id))); }
+  function clearSelected() { setSelected(new Set()); }
+
+  function handleSort(key) {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir("asc"); }
+  }
+
+  function sortArrow(key) {
+    if (sortKey !== key) return <span style={{ opacity: 0.25, marginLeft: 3 }}>↕</span>;
+    return <span style={{ marginLeft: 3 }}>{sortDir === "asc" ? "↑" : "↓"}</span>;
+  }
+
+  function handleColDragStart(e, key) { dragCol.current = key; e.dataTransfer.effectAllowed = "move"; }
+  function handleColDragOver(e, key) { e.preventDefault(); setDragOverCol(key); }
+  function handleColDrop(e, targetKey) {
+    e.preventDefault();
+    if (!dragCol.current || dragCol.current === targetKey) return;
+    const newCols = [...cols];
+    const fromIdx = newCols.findIndex(c => c.key === dragCol.current);
+    const toIdx = newCols.findIndex(c => c.key === targetKey);
+    newCols.splice(fromIdx, 1);
+    newCols.splice(toIdx, 0, cols[fromIdx]);
+    setCols(newCols);
+    try { localStorage.setItem("cerect_col_order", JSON.stringify(newCols)); } catch {}
+    dragCol.current = null;
+    setDragOverCol(null);
+  }
+  function handleColDragEnd() { dragCol.current = null; setDragOverCol(null); }
+
+  const filtered = data.filter(t => {
+    const ms = filt === "all" || t.status === filt;
+    const mc = cat === "all" || t.category === cat;
+    const mq = !q ||
+      (t.tenant || "").toLowerCase().includes(q.toLowerCase()) ||
+      (t.id || "").toLowerCase().includes(q.toLowerCase()) ||
+      (t.email || "").toLowerCase().includes(q.toLowerCase()) ||
+      (t.label || "").toLowerCase().includes(q.toLowerCase());
+    return ms && mc && mq;
+  });
+
+  const rev = filtered
+    .filter(t => t.rent && ["occupied", "arrears", "new"].includes(t.status))
+    .reduce((a, b) => a + (Number(b.rent) || 0), 0);
+
+  const sorted = sortKey ? [...filtered].sort((a, b) => {
+    let av, bv;
+    if (sortKey === "exvat" || sortKey === "incvat") {
+      av = Number(sortKey === "exvat" ? a.rent : a.vat_rent) || 0;
+      bv = Number(sortKey === "exvat" ? b.rent : b.vat_rent) || 0;
+    } else if (sortKey === "tenant") {
+      av = (a.tenant || "").toLowerCase(); bv = (b.tenant || "").toLowerCase();
+    } else if (sortKey === "unit") {
+      av = (a.label || a.id || "").toLowerCase(); bv = (b.label || b.id || "").toLowerCase();
+    } else {
+      av = (a[sortKey] || "").toString().toLowerCase(); bv = (b[sortKey] || "").toString().toLowerCase();
+    }
+    if (av < bv) return sortDir === "asc" ? -1 : 1;
+    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  }) : filtered;
+
+  function renderCell(t, key) {
+    switch (key) {
+      case "unit":     return <td key={key} style={{ fontFamily: "var(--fh)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.label || ("Unit " + t.id)}</td>;
+      case "category": return <td key={key}><span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, fontWeight: 500, color: "var(--sub)" }}>{t.category}</span></td>;
+      case "tenant":   return <td key={key} style={{ maxWidth: 180 }}>{t.tenant || <span style={{ color: "var(--sub)" }}>Vacant</span>}</td>;
+      case "size":     return <td key={key} style={{ fontSize: 12 }}>{t.size || "—"}</td>;
+      case "payment":  return <td key={key}>{t.payment ? <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, color: "var(--sub)" }}>{t.payment}</span> : "—"}</td>;
+      case "exvat":    return <td key={key} style={{ fontWeight: 600 }}>{t.rent ? "£" + t.rent : "—"}</td>;
+      case "incvat":   return <td key={key}>{t.vat_rent ? "£" + t.vat_rent : "—"}</td>;
+      case "email":    return <td key={key} style={{ fontSize: 11, color: "var(--sub)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.email || "—"}</td>;
+      case "status":   return <td key={key}><Pill s={t.status} /></td>;
+      default:         return <td key={key}>—</td>;
+    }
+  }
+
+  return (
+    <div className="page">
+      {/* Toolbar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <input
+            style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "8px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", width: 240, color: "var(--text)" }}
+            placeholder="Search tenant, unit, email…"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+          />
+          {["all", "Storage", "Residential", "Commercial"].map(c => (
+            <button key={c} className={`sp-btn ${cat === c ? "active" : ""}`} onClick={() => setCat(c)}>
+              {c === "all" ? "All" : c}
+            </button>
+          ))}
+          {["all", ...STATUSES].map(f => (
+            <button key={f} className={`sp-btn ${filt === f ? "active" : ""}`} onClick={() => setFilt(f)}>
+              {f === "all" ? "All Statuses" : SL[f]}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="sp-btn" onClick={() => { setCols(DEFAULT_COLS); try { localStorage.removeItem("cerect_col_order"); } catch {} }}>↺ Reset</button>
+          <button className="sp-btn sp-btn-primary" onClick={onAdd}>+ Add Tenant</button>
+        </div>
+      </div>
+
+      {/* Storage hint */}
+      <div style={{ fontSize: 12, color: "#7A5C00", padding: "8px 14px", background: "#FFFBEA", border: "1.5px solid #F6D860", borderRadius: 8, fontWeight: 500, marginBottom: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        💡 To add a storage tenant, click a vacant unit on the{" "}
+        <span style={{ color: "var(--navy)", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }} onClick={() => setPage("siteplan")}>
+          Site Plan
+        </span>
+      </div>
+
+      {/* Bulk selection bar */}
+      {selected.size > 0 && (
+        <div style={{ background: "#EEF4FF", border: "1.5px solid #B8D0F8", borderRadius: 8, padding: "10px 16px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--navy)" }}>{selected.size} selected</span>
+          <button className="sp-btn" onClick={() => {
+            if (!window.confirm(`Archive ${selected.size} tenant(s)?`)) return;
+            selected.forEach(id => onArchive(id));
+            clearSelected();
+          }}>📦 Archive selected</button>
+          <button className="sp-btn sp-btn-danger" onClick={() => {
+            if (!window.confirm(`Delete ${selected.size} tenant(s)? This cannot be undone.`)) return;
+            selected.forEach(id => onArchive(id));
+            clearSelected();
+          }}>🗑️ Delete selected</button>
+          <button className="sp-btn" onClick={clearSelected}>✕ Clear</button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: 32 }}>
+                  <input type="checkbox" checked={selected.size === sorted.length && sorted.length > 0} onChange={toggleAll} />
+                </th>
+                {cols.map(col => (
+                  <th
+                    key={col.key}
+                    draggable
+                    onDragStart={e => handleColDragStart(e, col.key)}
+                    onDragOver={e => handleColDragOver(e, col.key)}
+                    onDrop={e => handleColDrop(e, col.key)}
+                    onDragEnd={handleColDragEnd}
+                    onClick={() => handleSort(col.key)}
+                    style={{ cursor: "pointer", userSelect: "none", opacity: dragOverCol === col.key ? 0.4 : 1, whiteSpace: "nowrap" }}
+                    title="Click to sort · Drag to reorder"
+                  >
+                    <span style={{ marginRight: 4, opacity: 0.35 }}>⠿</span>
+                    {col.label}{sortArrow(col.key)}
+                  </th>
+                ))}
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={cols.length + 2} style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
+                    {data.length === 0 ? "No tenants yet — add areas and units on the Site Plan to get started." : "No tenants match your filters."}
+                  </td>
+                </tr>
+              )}
+              {sorted.slice(0, 200).map((t, i) => (
+                <tr key={i} style={{ background: selected.has(t.id) ? "#F0F6FF" : "" }}>
+                  <td style={{ padding: "11px 14px" }}>
+                    <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                  </td>
+                  {cols.map(col => renderCell(t, col.key))}
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => onEdit(t)}>Edit</button>
+                      <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => onArchive(t.id)} title="Archive">📦</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: "9px 16px", fontSize: 12, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>
+          {sorted.length} records · £{rev.toLocaleString()}/mo filtered revenue ·{" "}
+          <span style={{ opacity: 0.6 }}>Click column headers to sort · Drag to reorder</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -2628,6 +2848,32 @@ export default function App() {
     toast("Welcome to Cerect! Your account is ready.", "success");
   }
 
+  async function handleArchive(id) {
+    try {
+      const unit = data.find(u => u.id === id);
+      if (!unit) return;
+      // Save to archived_tenants
+      await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants`, {
+        method: "POST",
+        headers: { ...authH(token), Prefer: "return=minimal" },
+        body: JSON.stringify({ org_id: orgId, original_unit_id: String(id), tenant_data: unit }),
+      });
+      // Clear tenant from unit but keep the unit
+      await dbUpsert({
+        ...unit,
+        org_id: orgId,
+        tenant: null, email: null, phone: null, address: null,
+        payment: null, rent: null, vat_rent: null,
+        status: "available", move_in_date: null, move_out_date: null,
+        lock_deposit_paid: null, lock_deposit_amount: null,
+        tenant_deposit: null, key_number: null, notes: null, review: null,
+      }, token);
+      const fresh = await dbGet(orgId, token);
+      setData(Array.isArray(fresh) ? fresh : []);
+      toast("Tenant archived", "success");
+    } catch { toast("Archive failed", "error"); }
+  }
+
   // ── Site Plan handlers ────────────────────────────────────────────────────
   async function handleSave(form) {
     try {
@@ -2724,7 +2970,15 @@ export default function App() {
   function renderPage() {
     switch (page) {
       case "dashboard": return <DashboardPage session={session} org={org} data={data} />;
-      case "siteplan": return (
+      case "tenants": return (
+        <TenantsPage
+          data={data}
+          onEdit={r => { setEditItem(r); setIsNew(false); }}
+          onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
+          onArchive={handleArchive}
+          setPage={setPage}
+        />
+      );
         <SitePlanPage
           data={data}
           areas={areas}
@@ -2798,7 +3052,7 @@ export default function App() {
           onClose={() => setEditItem(null)}
           onSave={async form => { await handleSave(form); }}
           onDelete={async id => { await handleDelete(id); setEditItem(null); }}
-          onArchive={null}
+          onArchive={id => { handleArchive(id); setEditItem(null); }}
         />
       )}
 
