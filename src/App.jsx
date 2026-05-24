@@ -1,4 +1,4 @@
-// Cerect v0.8 — Storage Management Platform
+// Cerect v0.9 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -3779,6 +3779,359 @@ function UsersPage({ token, session, toast }) {
   );
 }
 
+// ─── Document helpers ─────────────────────────────────────────────────────────
+const DOC_TAGS = ["Contract", "ID / Passport", "Correspondence", "Payment Record", "Insurance", "Reference", "Photo", "Other"];
+
+function fileIcon(name) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (["pdf"].includes(ext)) return "📄";
+  if (["doc", "docx"].includes(ext)) return "📝";
+  if (["xls", "xlsx", "csv"].includes(ext)) return "📊";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "🖼️";
+  if (["zip", "rar", "7z"].includes(ext)) return "📦";
+  return "📎";
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+async function uploadDocument(file, tenantId, token) {
+  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${safeId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" },
+    body: file,
+  });
+  if (!r.ok) throw new Error("Upload failed");
+  return path;
+}
+
+async function listDocuments(tenantId, token) {
+  const safePath = tenantId.split("/").map(seg => seg.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_")).join("/");
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+    method: "POST",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ prefix: safePath + "/", limit: 100, sortBy: { column: "created_at", order: "desc" } }),
+  });
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function deleteDocument(path, token) {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
+  });
+  return r.ok;
+}
+
+async function getSignedUrl(path, token) {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${path}`, {
+    method: "POST",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ expiresIn: 3600 }),
+  });
+  const d = await r.json();
+  return d.signedURL ? `${SUPABASE_URL}/storage/v1${d.signedURL}` : null;
+}
+
+async function saveDocTag(filePath, tenantId, tag, originalName, orgId, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/document_tags`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ file_path: filePath, tenant_id: tenantId, tag, original_name: originalName, org_id: orgId }),
+  });
+}
+
+async function getDocTags(tenantId, orgId, token) {
+  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&file_path=like.${encodeURIComponent(safeId + "/%")}`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+async function getAllDocTags(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&order=id.desc`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+async function deleteDocTag(filePath, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}`, {
+    method: "DELETE", headers: authH(token),
+  });
+}
+
+async function updateDocTag(filePath, tag, token) {
+  const getR = await fetch(
+    `${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}&select=id`,
+    { headers: authH(token) }
+  );
+  const rows = await getR.json();
+  if (Array.isArray(rows) && rows[0]?.id) {
+    await fetch(`${SUPABASE_URL}/rest/v1/document_tags?id=eq.${rows[0].id}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ tag }),
+    });
+  }
+}
+
+// ─── Doc Viewer ───────────────────────────────────────────────────────────────
+function DocViewer({ url, name, onClose }) {
+  const ext = (name || "").split(".").pop().toLowerCase();
+  const isPdf = ext === "pdf";
+  const isImg = ["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext);
+
+  async function handleDownload() {
+    try {
+      const r = await fetch(url);
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch { window.open(url, "_blank"); }
+  }
+
+  return (
+    <div className="modal-ov" onClick={e => e.target === e.currentTarget && onClose()} style={{ zIndex: 2000 }}>
+      <div style={{ background: "#fff", borderRadius: "var(--r)", width: "90vw", maxWidth: 900, height: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,.25)", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, color: "var(--navy)", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "60%" }}>{name}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="sp-btn" onClick={handleDownload}>⬇️ Download</button>
+            <button className="sp-btn" onClick={() => window.open(url, "_blank")}>↗ Open in tab</button>
+            <button className="sp-btn" onClick={onClose}>✕ Close</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflow: "hidden", background: "#F4F7FA", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {isPdf && <iframe src={url} title={name} style={{ width: "100%", height: "100%", border: "none" }} />}
+          {isImg && <img src={url} alt={name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", padding: 16 }} />}
+          {!isPdf && !isImg && (
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>{fileIcon(name)}</div>
+              <div style={{ fontSize: 14, color: "var(--sub)", marginBottom: 20 }}>{name}</div>
+              <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 20 }}>This file type cannot be previewed inline.</p>
+              <button className="sp-btn sp-btn-primary" onClick={handleDownload}>⬇️ Download file</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Documents Page ───────────────────────────────────────────────────────────
+function DocumentsPage({ data, orgId, token, toast }) {
+  const [folders, setFolders] = useState([]);
+  const [folderDocs, setFolderDocs] = useState({});
+  const [allTags, setAllTags] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [loadingFolder, setLoadingFolder] = useState({});
+  const [expanded, setExpanded] = useState({});
+  const [viewerDoc, setViewerDoc] = useState(null);
+  const [q, setQ] = useState("");
+  const [tagFilter, setTagFilter] = useState("all");
+  const [storageError, setStorageError] = useState(false);
+
+  useEffect(() => {
+    if (!token || !orgId) return;
+    Promise.all([
+      fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+        method: "POST",
+        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prefix: "", limit: 500, delimiter: "/" }),
+      }).then(r => r.ok ? r.json() : []).catch(() => { setStorageError(true); return []; }),
+      getAllDocTags(orgId, token),
+    ]).then(([flds, tags]) => {
+      const validFolders = (Array.isArray(flds) ? flds : [])
+        .map(f => (f.name || "").replace(/\/$/, ""))
+        .filter(f => f && f !== "archive" && f !== "enquiry_archive");
+      setFolders(validFolders);
+      const tagMap = {};
+      (Array.isArray(tags) ? tags : []).forEach(r => { tagMap[r.file_path] = r; });
+      setAllTags(tagMap);
+      setLoading(false);
+    });
+  }, [token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadFolder(folderName) {
+    if (folderDocs[folderName]) return;
+    setLoadingFolder(l => ({ ...l, [folderName]: true }));
+    try {
+      const fr = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+        method: "POST",
+        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prefix: folderName + "/", limit: 200, sortBy: { column: "created_at", order: "desc" } }),
+      });
+      const files = await fr.json();
+      const realFiles = (Array.isArray(files) ? files : []).filter(f => f.id).map(f => ({
+        ...f, name: folderName + "/" + f.name, filename: f.name, path: folderName + "/" + f.name,
+      }));
+      setFolderDocs(d => ({ ...d, [folderName]: realFiles }));
+    } catch { setFolderDocs(d => ({ ...d, [folderName]: [] })); }
+    setLoadingFolder(l => ({ ...l, [folderName]: false }));
+  }
+
+  async function toggleExpand(folderName) {
+    const nowOpen = !expanded[folderName];
+    setExpanded(e => ({ ...e, [folderName]: nowOpen }));
+    if (nowOpen) await loadFolder(folderName);
+  }
+
+  async function handleDelete(path, folderName) {
+    if (!window.confirm("Delete this document?")) return;
+    await deleteDocument(path, token);
+    await deleteDocTag(path, token);
+    setFolderDocs(d => ({ ...d, [folderName]: (d[folderName] || []).filter(f => f.path !== path) }));
+    toast("Document deleted", "success");
+  }
+
+  async function handleTagChange(filePath, newTag) {
+    await updateDocTag(filePath, newTag, token);
+    const fresh = await getAllDocTags(orgId, token);
+    const tagMap = {};
+    (Array.isArray(fresh) ? fresh : []).forEach(r => { tagMap[r.file_path] = r; });
+    setAllTags(tagMap);
+    toast("Tag saved", "success");
+  }
+
+  function getFolderLabel(folderName) {
+    const safeId = folderName.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const tenant = data.find(t => {
+      const ts = (t.id || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+      return ts === safeId || t.id === folderName;
+    });
+    if (tenant) return tenant.label || tenant.tenant || ("Unit " + folderName);
+    if (folderName.startsWith("enquiry_")) return `📋 CRM Enquiry`;
+    return "Unit " + folderName;
+  }
+
+  const filteredFolders = folders.filter(f => {
+    const label = getFolderLabel(f);
+    return !q || label.toLowerCase().includes(q.toLowerCase()) || f.toLowerCase().includes(q.toLowerCase());
+  });
+
+  return (
+    <div className="page">
+      {storageError && (
+        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "14px 18px", marginBottom: 16, fontSize: 13, color: "#5D4037" }}>
+          <strong>⚙️ Storage not set up yet</strong><br />
+          You need to create a <strong>documents</strong> bucket in your Supabase project. Go to Supabase → Storage → New bucket → name it <code>documents</code> → set to Private.
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+        <input
+          style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "8px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", width: 240, color: "var(--text)" }}
+          placeholder="Search by tenant or unit…"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+        />
+        {["all", ...DOC_TAGS].map(t => (
+          <button key={t} className={`sp-btn ${tagFilter === t ? "active" : ""}`} style={{ fontSize: 11 }} onClick={() => setTagFilter(t)}>
+            {t === "all" ? "All Tags" : t}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
+
+      {!loading && filteredFolders.length === 0 && (
+        <div className="card" style={{ textAlign: "center", padding: 48 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📁</div>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No documents yet</div>
+          <div style={{ fontSize: 13, color: "var(--sub)" }}>Documents are uploaded from the Edit screen on each tenant or unit.</div>
+        </div>
+      )}
+
+      {filteredFolders.map(folderName => {
+        const label = getFolderLabel(folderName);
+        const isOpen = expanded[folderName];
+        const docs = (folderDocs[folderName] || []).filter(doc => tagFilter === "all" || allTags[doc.path]?.tag === tagFilter);
+        const isLoading = loadingFolder[folderName];
+        const totalCount = folderDocs[folderName]?.length;
+
+        return (
+          <div key={folderName} className="card" style={{ marginBottom: 8, padding: 0, overflow: "hidden" }}>
+            <div
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", cursor: "pointer" }}
+              onClick={() => toggleExpand(folderName)}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 16, color: "var(--navy)" }}>{isOpen ? "▾" : "▸"}</span>
+                <span style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{label}</span>
+                {totalCount != null && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 99, color: "var(--sub)" }}>
+                    {totalCount} file{totalCount !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {isOpen && (
+              <div style={{ borderTop: "1px solid var(--border)" }}>
+                {isLoading && <div style={{ padding: "14px 18px", color: "var(--sub)", fontSize: 13 }}>⏳ Loading…</div>}
+                {!isLoading && docs.length === 0 && (
+                  <div style={{ padding: "14px 18px", color: "var(--sub)", fontSize: 13 }}>
+                    No documents{tagFilter !== "all" ? " with this tag" : ""}
+                  </div>
+                )}
+                {!isLoading && docs.map(doc => {
+                  const tagInfo = allTags[doc.path];
+                  const displayName = (tagInfo?.original_name || doc.filename).replace(/^\d+_/, "");
+                  return (
+                    <div key={doc.path} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid var(--border)" }}>
+                      <div style={{ fontSize: 22, flexShrink: 0 }}>{fileIcon(displayName)}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
+                          <select
+                            key={tagInfo?.tag || "none"}
+                            style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid var(--mist2)", color: "var(--navy)", background: "var(--mist)", fontFamily: "var(--fb)" }}
+                            defaultValue={tagInfo?.tag || ""}
+                            onChange={e => e.target.value && handleTagChange(doc.path, e.target.value)}
+                          >
+                            <option value="">{tagInfo?.tag || "— Tag —"}</option>
+                            {DOC_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                          <span style={{ fontSize: 11, color: "var(--sub)" }}>{formatBytes(doc.metadata?.size)}</span>
+                          {doc.created_at && <span style={{ fontSize: 11, color: "var(--sub)" }}>{new Date(doc.created_at).toLocaleDateString("en-GB")}</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button className="sp-btn" style={{ fontSize: 11 }} onClick={async () => {
+                          const url = await getSignedUrl(doc.path, token);
+                          if (url) setViewerDoc({ url, name: displayName });
+                        }}>👁 View</button>
+                        <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleDelete(doc.path, folderName)}>🗑️</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {viewerDoc && <DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={() => setViewerDoc(null)} />}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -4363,6 +4716,14 @@ export default function App() {
           onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
           onArchive={handleArchive}
           setPage={setPage}
+        />
+      );
+      case "documents": return (
+        <DocumentsPage
+          data={data}
+          orgId={orgId}
+          token={token}
+          toast={toast}
         />
       );
       case "users": return (
