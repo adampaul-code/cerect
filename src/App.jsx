@@ -3799,6 +3799,7 @@ function formatBytes(bytes) {
   return (bytes / 1048576).toFixed(1) + " MB";
 }
 
+// eslint-disable-next-line no-unused-vars
 async function uploadDocument(file, tenantId, token) {
   const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `${safeId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
@@ -3811,6 +3812,7 @@ async function uploadDocument(file, tenantId, token) {
   return path;
 }
 
+// eslint-disable-next-line no-unused-vars
 async function listDocuments(tenantId, token) {
   const safePath = tenantId.split("/").map(seg => seg.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_")).join("/");
   const r = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
@@ -3840,6 +3842,7 @@ async function getSignedUrl(path, token) {
   return d.signedURL ? `${SUPABASE_URL}/storage/v1${d.signedURL}` : null;
 }
 
+// eslint-disable-next-line no-unused-vars
 async function saveDocTag(filePath, tenantId, tag, originalName, orgId, token) {
   await fetch(`${SUPABASE_URL}/rest/v1/document_tags`, {
     method: "POST",
@@ -3848,6 +3851,7 @@ async function saveDocTag(filePath, tenantId, tag, originalName, orgId, token) {
   });
 }
 
+// eslint-disable-next-line no-unused-vars
 async function getDocTags(tenantId, orgId, token) {
   const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
   const r = await fetch(
