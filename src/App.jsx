@@ -1670,7 +1670,7 @@ function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = 
       <div className="modal">
         <div className="modal-header">
           <div className="modal-title">
-            {isNew ? "Add New Unit / Tenant" : `Edit — ${form.label || "Unit " + form.id}`}
+            {isNew ? "Add New Unit / Tenant" : `Edit — ${form.label || form.id}`}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {isDirty && <span className="unsaved-badge">● Unsaved changes</span>}
