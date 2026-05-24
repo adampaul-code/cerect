@@ -3364,6 +3364,7 @@ export default function App() {
           onStatusUpdate={handleStatusUpdate}
         />
       );
+      case "tenants": return (
         <TenantsPage
           data={data}
           onEdit={r => { setEditItem(r); setIsNew(false); }}
