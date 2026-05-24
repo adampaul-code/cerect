@@ -1,4 +1,4 @@
-// Cerect v1.1 — Storage Management Platform
+// Cerect v1.2 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -2338,16 +2338,18 @@ function TenantsPage({ data, onEdit, onAdd, onArchive, setPage }) {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button className="sp-btn" onClick={() => { setCols(DEFAULT_COLS); try { localStorage.removeItem("cerect_col_order"); } catch {} }}>↺ Reset</button>
-          <button className="sp-btn sp-btn-primary" onClick={onAdd}>+ Add Tenant</button>
+          <button className="sp-btn sp-btn-primary" onClick={() => onAdd("Residential")}>+ Residential</button>
+          <button className="sp-btn sp-btn-navy" onClick={() => onAdd("Commercial")}>+ Commercial</button>
         </div>
       </div>
 
       {/* Storage hint */}
       <div style={{ fontSize: 12, color: "#7A5C00", padding: "8px 14px", background: "#FFFBEA", border: "1.5px solid #F6D860", borderRadius: 8, fontWeight: 500, marginBottom: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
-        💡 To add a storage tenant, click a vacant unit on the{" "}
+        💡 Storage tenants are added via the{" "}
         <span style={{ color: "var(--navy)", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }} onClick={() => setPage("siteplan")}>
           Site Plan
         </span>
+        {" "}· Use the buttons above for Residential and Commercial properties
       </div>
 
       {/* Bulk selection bar */}
@@ -4541,7 +4543,9 @@ function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
   const totalRent = data.filter(u => u.rent && activeStatuses.includes(u.status)).reduce((a, b) => a + (Number(b.rent) || 0), 0);
   const occRate = stor.length > 0 ? Math.round(occ / stor.length * 100) : 0;
 
-  // Alerts
+  const arrears = data.filter(u => u.status === "arrears");
+  const leaving = data.filter(u => u.status === "leaving");
+
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const in60 = new Date(today); in60.setDate(in60.getDate() + 60);
 
@@ -4646,6 +4650,22 @@ function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
       </div>
 
       {/* Alerts */}
+      {arrears.length > 0 && (
+        <Alert color="#C0392B" bg="#FFF0EE" border="#FFCDD2">
+          <strong>⚠️ In arrears</strong> — {arrears.map(u => (
+            <span key={u.id} style={{ marginRight: 12 }}>{u.tenant || u.id}{u.rent ? ` · £${u.rent}/mo` : ""}</span>
+          ))}
+        </Alert>
+      )}
+
+      {leaving.length > 0 && (
+        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
+          <strong>🚪 Leaving</strong> — {leaving.map(u => (
+            <span key={u.id} style={{ marginRight: 12 }}>{u.tenant || u.id}{u.move_out_date ? ` · ${new Date(u.move_out_date).toLocaleDateString("en-GB")}` : ""}</span>
+          ))}
+        </Alert>
+      )}
+
       {vacancyMatches.length > 0 && (
         <Alert color="#1A7F5A" bg="#EDF7F2" border="#A8DEC2">
           <strong>🟢 Vacancy match</strong> — {vacancyMatches.length} vacant unit{vacancyMatches.length !== 1 ? "s" : ""} with waiting enquiries in the same category.{" "}
@@ -5087,7 +5107,7 @@ export default function App() {
         <TenantsPage
           data={data}
           onEdit={r => { setEditItem(r); setIsNew(false); }}
-          onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
+          onAdd={cat => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: cat || "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
           onArchive={handleArchive}
           setPage={setPage}
         />
