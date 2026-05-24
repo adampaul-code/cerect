@@ -1,4 +1,4 @@
-// Cerect v0.6 — Storage Management Platform
+// Cerect v0.7 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -3229,6 +3229,241 @@ function EnquiriesPage({ orgId, token, data, toast }) {
   );
 }
 
+// ─── Archive helpers ──────────────────────────────────────────────────────────
+async function archiveList(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/archived_tenants?org_id=eq.${orgId}&order=archived_at.desc`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+async function archiveDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${id}`, {
+    method: "DELETE", headers: authH(token),
+  });
+}
+
+async function dbGetDeleted(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&deleted_at=not.is.null&archived=eq.false&order=deleted_at.desc`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+// ─── Archive Page ─────────────────────────────────────────────────────────────
+function ArchivePage({ orgId, token, data, toast, onDataRefresh }) {
+  const [archived, setArchived] = useState([]);
+  const [deleted, setDeleted] = useState([]);
+  const [tab, setTab] = useState("archived");
+  const [loading, setLoading] = useState(true);
+
+  async function reload() {
+    const [a, d] = await Promise.all([archiveList(orgId, token), dbGetDeleted(orgId, token)]);
+    setArchived(Array.isArray(a) ? a : []);
+    setDeleted(Array.isArray(d) ? d : []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (!orgId || !token) return;
+    reload();
+  }, [orgId, token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function daysLeft(ts) {
+    if (!ts) return "";
+    const days = 30 - Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
+    return days <= 0 ? "Expires today" : `${days} days left`;
+  }
+
+  async function handleRestore(archiveId) {
+    try {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${archiveId}&org_id=eq.${orgId}`,
+        { headers: authH(token) }
+      );
+      const rows = await r.json();
+      if (!rows?.[0]) { toast("Archive record not found", "error"); return; }
+      const record = rows[0];
+      const tenantData = record.tenant_data;
+      const unitId = record.original_unit_id;
+
+      // Hard block — never allow restore if unit is currently occupied
+      const unit = data.find(u => u.id === unitId);
+      const unitOccupied = unit && (unit.tenant || ["occupied", "new", "arrears", "leaving"].includes(unit.status));
+      if (unitOccupied) {
+        alert(
+          `⛔ Cannot Restore\n\nUnit ${unitId} is currently occupied by "${unit.tenant || "a tenant"}".\n\n` +
+          `To restore ${tenantData?.tenant || "this tenant"}, first archive the current occupant, or add them to a different vacant unit.`
+        );
+        return;
+      }
+
+      if (!window.confirm(`Restore ${tenantData?.tenant || unitId} to unit ${unitId}?`)) return;
+
+      const restored = { ...tenantData, id: unitId, org_id: orgId, archived: false, deleted_at: null, deleted_data: null };
+      await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
+        method: "POST",
+        headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(restored),
+      });
+      await archiveDelete(archiveId, token);
+      toast(`Restored — ${tenantData?.tenant || tenantData?.label || unitId}`, "success");
+      await reload();
+      if (onDataRefresh) onDataRefresh();
+    } catch { toast("Restore failed", "error"); }
+  }
+
+  async function handleRestoreDeleted(id) {
+    try {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
+        { headers: authH(token) }
+      );
+      const rows = await r.json();
+      if (!rows?.[0]) { toast("Record not found", "error"); return; }
+      const row = rows[0];
+      const orig = row.deleted_data ? JSON.parse(row.deleted_data) : row;
+      if (!window.confirm(`Restore ${orig.tenant || orig.label || id}?`)) return;
+      await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
+        method: "POST",
+        headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify({ ...orig, deleted_at: null, deleted_data: null, archived: false, org_id: orgId }),
+      });
+      toast(`Restored — ${orig.tenant || orig.label || id}`, "success");
+      await reload();
+      if (onDataRefresh) onDataRefresh();
+    } catch { toast("Restore failed", "error"); }
+  }
+
+  async function handlePermDelete(id, isDeleted = false) {
+    if (!window.confirm("Permanently delete this record? This cannot be undone.")) return;
+    try {
+      if (isDeleted) {
+        await fetch(
+          `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
+          { method: "DELETE", headers: authH(token) }
+        );
+      } else {
+        await archiveDelete(id, token);
+      }
+      toast("Permanently deleted", "success");
+      await reload();
+    } catch { toast("Delete failed", "error"); }
+  }
+
+  function RecordRow({ icon, name, meta, onRestore, onDelete }) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ fontSize: 24, flexShrink: 0 }}>{icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{name}</div>
+          <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 2 }}>{meta}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button className="sp-btn" style={{ fontSize: 12, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={onRestore}>↩️ Restore</button>
+          <button className="sp-btn sp-btn-danger" style={{ fontSize: 12 }} onClick={onDelete}>🗑️ Delete</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button className={`sp-btn ${tab === "archived" ? "active" : ""}`} onClick={() => setTab("archived")}>
+          📦 Archived Tenants {archived.length > 0 && `(${archived.length})`}
+        </button>
+        <button className={`sp-btn ${tab === "deleted" ? "active" : ""}`} onClick={() => setTab("deleted")}>
+          🗑️ Recently Deleted {deleted.length > 0 && `(${deleted.length})`}
+        </button>
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
+
+      {/* Archived tab */}
+      {!loading && tab === "archived" && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Archived Tenants</div>
+            <span style={{ fontSize: 12, color: "var(--sub)" }}>{archived.length} records</span>
+          </div>
+          {archived.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>📦</div>
+              <div style={{ fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No archived tenants yet</div>
+              <div style={{ fontSize: 13 }}>Use the Archive button in a tenant's Edit screen to archive a departed tenant.</div>
+            </div>
+          ) : (
+            archived.map(record => {
+              const t = record.tenant_data || {};
+              const name = t.tenant || t.label || ("Unit " + record.original_unit_id);
+              const icon = t.category === "Residential" ? "🏠" : t.category === "Commercial" ? "🏢" : "📦";
+              const meta = [
+                `Unit ${record.original_unit_id}`,
+                t.row_name,
+                t.rent ? `£${t.rent}/mo` : null,
+                t.email,
+                `Archived ${new Date(record.archived_at).toLocaleDateString("en-GB")}`,
+              ].filter(Boolean).join(" · ");
+              return (
+                <RecordRow
+                  key={record.id}
+                  icon={icon}
+                  name={name}
+                  meta={meta}
+                  onRestore={() => handleRestore(record.id)}
+                  onDelete={() => handlePermDelete(record.id, false)}
+                />
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* Deleted tab */}
+      {!loading && tab === "deleted" && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Recently Deleted</div>
+            <span style={{ fontSize: 12, color: "var(--sub)" }}>Auto-purged after 30 days</span>
+          </div>
+          {deleted.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
+              No recently deleted records
+            </div>
+          ) : (
+            deleted.map(t => {
+              const orig = t.deleted_data ? JSON.parse(t.deleted_data) : t;
+              const name = orig.tenant || orig.label || ("Unit " + t.id);
+              const icon = t.category === "Residential" ? "🏠" : t.category === "Commercial" ? "🏢" : "📦";
+              const meta = [
+                `Unit ${t.id}`,
+                t.category,
+                orig.row_name,
+                orig.rent ? `£${orig.rent}/mo` : null,
+                t.deleted_at ? `⏱ ${daysLeft(t.deleted_at)}` : null,
+              ].filter(Boolean).join(" · ");
+              return (
+                <RecordRow
+                  key={t.id}
+                  icon={icon}
+                  name={name}
+                  meta={meta}
+                  onRestore={() => handleRestoreDeleted(t.id)}
+                  onDelete={() => handlePermDelete(t.id, true)}
+                />
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -3813,6 +4048,15 @@ export default function App() {
           onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
           onArchive={handleArchive}
           setPage={setPage}
+        />
+      );
+      case "archive": return (
+        <ArchivePage
+          orgId={orgId}
+          token={token}
+          data={data}
+          toast={toast}
+          onDataRefresh={loadData}
         />
       );
       case "crm": return (
