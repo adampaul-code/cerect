@@ -2157,7 +2157,7 @@ function SitePlanPage({ data, areas, onEdit, onAdd, onDelete, onRenameRow, onDel
         <div className="sp-detail" ref={detailRef}>
           <div className="sp-detail-header">
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15 }}>Unit {selU.id}</span>
+              <span style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15 }}>Unit {selU.label || selU.id}</span>
               <Pill s={selU.status} />
             </div>
             <div style={{ display: "flex", gap: 8 }}>
