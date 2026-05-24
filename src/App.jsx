@@ -2979,6 +2979,7 @@ export default function App() {
           setPage={setPage}
         />
       );
+      case "siteplan": return (
         <SitePlanPage
           data={data}
           areas={areas}
