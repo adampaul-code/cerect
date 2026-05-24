@@ -1,4 +1,4 @@
-// Cerect v0.4 — Storage Management Platform
+// Cerect v0.5 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -2411,6 +2411,382 @@ function TenantsPage({ data, onEdit, onAdd, onArchive, setPage }) {
   );
 }
 
+// ─── Payment helpers ──────────────────────────────────────────────────────────
+async function paymentRecordList(orgId, month, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/payment_records?org_id=eq.${orgId}&period_month=eq.${month}&order=paid_at.desc`,
+    { headers: authH(token) }
+  );
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+async function paymentRecordSave(record, token) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/payment_records`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify(record),
+  });
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+async function paymentRecordDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/payment_records?id=eq.${id}`, {
+    method: "DELETE",
+    headers: authH(token),
+  });
+}
+
+async function paymentRecordHistory(orgId, tenantId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/payment_records?org_id=eq.${orgId}&tenant_id=eq.${encodeURIComponent(tenantId)}&order=period_month.desc&limit=24`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+// ─── Payments Page ────────────────────────────────────────────────────────────
+function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
+  const now = new Date();
+  const [viewMonth, setViewMonth] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`);
+  const [records, setRecords] = useState([]);
+  const [loadingRec, setLoadingRec] = useState(false);
+  const [markingId, setMarkingId] = useState(null);
+  const [historyTenant, setHistoryTenant] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [notesModal, setNotesModal] = useState(null);
+  const [notesVal, setNotesVal] = useState("");
+  const [clearArrears, setClearArrears] = useState(true);
+
+  const active = data.filter(u => ["occupied", "new", "arrears"].includes(u.status) && u.rent);
+
+  useEffect(() => {
+    if (!token || !orgId) return;
+    setLoadingRec(true);
+    paymentRecordList(orgId, viewMonth, token)
+      .then(r => setRecords(Array.isArray(r) ? r : []))
+      .catch(() => setRecords([]))
+      .finally(() => setLoadingRec(false));
+  }, [viewMonth, token, orgId]);
+
+  const monthLabel = m => {
+    const [y, mo] = m.split("-");
+    return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-GB", { month: "long", year: "numeric" });
+  };
+
+  const prevMonth = () => {
+    const [y, mo] = viewMonth.split("-").map(Number);
+    const d = new Date(y, mo - 2, 1);
+    setViewMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  const nextMonth = () => {
+    const [y, mo] = viewMonth.split("-").map(Number);
+    const d = new Date(y, mo, 1);
+    setViewMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  const isCurrentMonth = viewMonth === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const isOverdueMonth = isCurrentMonth && now.getDate() > 7;
+
+  const paidIds = new Set(records.map(r => r.tenant_id));
+  const paid = active.filter(u => paidIds.has(u.id));
+  const unpaid = active.filter(u => !paidIds.has(u.id));
+  const totalRent = active.reduce((a, b) => a + (Number(b.rent) || 0), 0);
+  const totalCollected = paid.reduce((a, b) => a + (Number(b.rent) || 0), 0);
+  const totalOutstanding = unpaid.reduce((a, b) => a + (Number(b.rent) || 0), 0);
+  const pct = totalRent > 0 ? Math.round(totalCollected / totalRent * 100) : 0;
+
+  const getRecord = uid => records.find(r => r.tenant_id === uid);
+
+  const sortedActive = [
+    ...unpaid.sort((a, b) => (a.status === "arrears" ? -1 : 0) - (b.status === "arrears" ? -1 : 0)),
+    ...paid,
+  ];
+
+  async function handleMarkPaid(unit, notes, doClearArrears) {
+    setMarkingId(unit.id);
+    try {
+      const rec = {
+        org_id: orgId,
+        tenant_id: unit.id,
+        period_month: viewMonth,
+        amount: Number(unit.rent) || 0,
+        method: unit.payment || "",
+        notes: notes || "",
+        paid_at: new Date().toISOString(),
+      };
+      const saved = await paymentRecordSave(rec, token);
+      const record = Array.isArray(saved) ? saved[0] : saved;
+      if (record?.id) {
+        setRecords(r => [...r, record]);
+        if (unit.status === "arrears" && doClearArrears && onStatusUpdate) {
+          await onStatusUpdate(unit.id, "occupied");
+          toast(`${unit.tenant || unit.id} marked paid · arrears cleared`, "success");
+        } else {
+          toast(`${unit.tenant || unit.id} marked as paid`, "success");
+        }
+      } else {
+        toast("Save failed — please try again", "error");
+      }
+    } catch (e) {
+      toast("Save failed: " + e.message, "error");
+    }
+    setMarkingId(null);
+  }
+
+  async function handleUnmark(unit) {
+    const rec = getRecord(unit.id);
+    if (!rec) return;
+    if (!window.confirm(`Remove payment record for ${unit.tenant || unit.id} for ${monthLabel(viewMonth)}?`)) return;
+    await paymentRecordDelete(rec.id, token);
+    setRecords(r => r.filter(x => x.id !== rec.id));
+    toast("Payment record removed", "success");
+  }
+
+  async function openHistory(unit) {
+    setHistoryTenant(unit);
+    setHistoryLoading(true);
+    const h = await paymentRecordHistory(orgId, unit.id, token);
+    setHistory(Array.isArray(h) ? h : []);
+    setHistoryLoading(false);
+  }
+
+  function exportReconciliation() {
+    const rows = [["Unit", "Tenant", "Payment Method", "Rent/mo", "Status", "Paid", "Date Paid", "Reference"]];
+    sortedActive.forEach(u => {
+      const rec = getRecord(u.id);
+      rows.push([
+        u.label || u.id, u.tenant || "", u.payment || "", u.rent || "",
+        SL[u.status] || u.status,
+        rec ? "Yes" : "No",
+        rec?.paid_at ? new Date(rec.paid_at).toLocaleDateString("en-GB") : "",
+        rec?.notes || "",
+      ]);
+    });
+    import("xlsx").then(XLSX => {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
+      XLSX.writeFile(wb, `Cerect_Payments_${viewMonth}.xlsx`);
+    });
+  }
+
+  return (
+    <div className="page">
+      {/* Month navigator */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button className="sp-btn" onClick={prevMonth}>← Prev</button>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", minWidth: 180, textAlign: "center" }}>
+            {monthLabel(viewMonth)}
+          </div>
+          <button className="sp-btn" onClick={nextMonth} disabled={isCurrentMonth}>Next →</button>
+        </div>
+        {isCurrentMonth && isOverdueMonth && unpaid.length > 0 && (
+          <div style={{ background: "#FFF0EE", border: "1.5px solid #FFCDD2", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "var(--danger)", fontWeight: 600 }}>
+            ⚠️ {unpaid.length} tenant{unpaid.length !== 1 ? "s" : ""} not yet marked paid
+          </div>
+        )}
+      </div>
+
+      {/* KPI cards */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 16 }}>
+        <div className="kpi-card">
+          <div className="kpi-label">Collected</div>
+          <div className="kpi-value" style={{ color: "var(--success)" }}>£{totalCollected.toLocaleString()}</div>
+          <div className="kpi-meta">{paid.length} of {active.length} tenants</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">Outstanding</div>
+          <div className="kpi-value" style={{ color: totalOutstanding > 0 ? "var(--danger)" : "var(--success)" }}>£{totalOutstanding.toLocaleString()}</div>
+          <div className="kpi-meta">{unpaid.length} tenant{unpaid.length !== 1 ? "s" : ""} remaining</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">Monthly Total</div>
+          <div className="kpi-value">£{totalRent.toLocaleString()}</div>
+          <div className="kpi-meta">{active.length} active tenants</div>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--sub)", marginBottom: 6 }}>
+          <span>{pct}% collected</span>
+          <span>£{totalCollected.toLocaleString()} of £{totalRent.toLocaleString()}</span>
+        </div>
+        <div style={{ height: 8, background: "var(--mist2)", borderRadius: 99, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${pct}%`, background: "var(--success)", borderRadius: 99, transition: "width .4s" }} />
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Payment Reconciliation</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {loadingRec && <span style={{ fontSize: 12, color: "var(--sub)" }}>Loading…</span>}
+            <button className="sp-btn" onClick={exportReconciliation}>⬇️ Export Excel</button>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Unit</th>
+                <th>Tenant</th>
+                <th>Method</th>
+                <th style={{ textAlign: "right" }}>Rent/mo</th>
+                <th>Status</th>
+                <th style={{ textAlign: "right" }}>Paid</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedActive.length === 0 && (
+                <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--sub)", padding: "32px 0" }}>No active tenants with rent set</td></tr>
+              )}
+              {sortedActive.map(u => {
+                const rec = getRecord(u.id);
+                const isPaid = !!rec;
+                const paidDate = rec?.paid_at ? new Date(rec.paid_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : null;
+                return (
+                  <tr key={u.id} style={{ background: isPaid ? "#F7FDF9" : u.status === "arrears" ? "#FFFAF5" : "" }}>
+                    <td style={{ fontWeight: 700, color: "var(--navy)" }}>{u.label || u.id}</td>
+                    <td style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <button onClick={() => openHistory(u)} style={{ background: "none", border: "none", color: "var(--navy)", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: 0, textAlign: "left" }}>
+                        {u.tenant || "—"}
+                      </button>
+                    </td>
+                    <td style={{ fontSize: 12, color: "var(--sub)" }}>{u.payment || "—"}</td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>£{(Number(u.rent) || 0).toLocaleString()}</td>
+                    <td><Pill s={u.status} /></td>
+                    <td style={{ textAlign: "right", fontSize: 12 }}>
+                      {isPaid
+                        ? <span style={{ color: "var(--success)", fontWeight: 600 }}>
+                            ✓ {paidDate}
+                            {rec?.notes && <span style={{ fontSize: 10, color: "var(--sub)", fontWeight: 400, marginLeft: 4 }}>· {rec.notes}</span>}
+                          </span>
+                        : <span style={{ color: isOverdueMonth ? "var(--danger)" : "var(--sub)" }}>—</span>
+                      }
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {isPaid
+                        ? <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleUnmark(u)}>↩ Undo</button>
+                        : <button
+                            className="sp-btn"
+                            style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }}
+                            onClick={() => { setNotesModal({ unit: u }); setNotesVal(""); setClearArrears(true); }}
+                            disabled={markingId === u.id}
+                          >
+                            {markingId === u.id ? "…" : "✓ Mark paid"}
+                          </button>
+                      }
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Mark paid modal */}
+      {notesModal && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setNotesModal(null)}>
+          <div className="modal" style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <div className="modal-title">Mark as Paid — {notesModal.unit.tenant || notesModal.unit.id}</div>
+              <button className="modal-close" onClick={() => setNotesModal(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>
+                £{notesModal.unit.rent}/mo · {monthLabel(viewMonth)}
+              </div>
+              <div className="form-grid-item full" style={{ marginBottom: 12 }}>
+                <label>Reference / Notes (optional)</label>
+                <input
+                  autoFocus
+                  value={notesVal}
+                  onChange={e => setNotesVal(e.target.value)}
+                  placeholder="e.g. BACS ref 12345, cheque no. 001…"
+                  onKeyDown={e => {
+                    if (e.key === "Enter") {
+                      handleMarkPaid(notesModal.unit, notesVal, clearArrears);
+                      setNotesModal(null);
+                    }
+                  }}
+                />
+              </div>
+              {notesModal.unit.status === "arrears" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, padding: "10px 12px", background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 7 }}>
+                  <input type="checkbox" id="clear-arr" checked={clearArrears} onChange={e => setClearArrears(e.target.checked)} style={{ width: 15, height: 15, cursor: "pointer" }} />
+                  <label htmlFor="clear-arr" style={{ fontSize: 13, color: "#7A5C00", cursor: "pointer", fontWeight: 500 }}>
+                    Also clear arrears status (set back to Occupied)
+                  </label>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="modal-btn modal-btn-outline" onClick={() => setNotesModal(null)}>Cancel</button>
+              <button className="modal-btn" style={{ background: "var(--success)", color: "#fff" }} onClick={() => {
+                handleMarkPaid(notesModal.unit, notesVal, clearArrears);
+                setNotesModal(null);
+              }}>✓ Confirm paid</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* History modal */}
+      {historyTenant && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setHistoryTenant(null)}>
+          <div className="modal" style={{ maxWidth: 480 }}>
+            <div className="modal-header">
+              <div className="modal-title">Payment History — {historyTenant.tenant || historyTenant.id}</div>
+              <button className="modal-close" onClick={() => setHistoryTenant(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 14 }}>
+                £{historyTenant.rent}/mo · {historyTenant.payment || "—"}
+              </div>
+              {historyLoading
+                ? <div style={{ textAlign: "center", padding: "24px 0", color: "var(--sub)" }}>Loading…</div>
+                : history.length === 0
+                  ? <div style={{ textAlign: "center", padding: "24px 0", color: "var(--sub)" }}>No payment records found</div>
+                  : <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Month</th>
+                          <th style={{ textAlign: "right" }}>Amount</th>
+                          <th>Date Paid</th>
+                          <th>Reference</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {history.map(h => (
+                          <tr key={h.id}>
+                            <td style={{ fontWeight: 600 }}>{monthLabel(h.period_month)}</td>
+                            <td style={{ textAlign: "right" }}>£{(Number(h.amount) || 0).toLocaleString()}</td>
+                            <td style={{ fontSize: 12, color: "var(--sub)" }}>
+                              {h.paid_at ? new Date(h.paid_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                            <td style={{ fontSize: 12, color: "var(--sub)" }}>{h.notes || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+              }
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -2874,6 +3250,15 @@ export default function App() {
     } catch { toast("Archive failed", "error"); }
   }
 
+  async function handleStatusUpdate(id, newStatus) {
+    try {
+      const unit = data.find(u => u.id === id);
+      if (!unit) return;
+      await dbUpsert({ ...unit, org_id: orgId, status: newStatus }, token);
+      setData(d => d.map(u => u.id === id ? { ...u, status: newStatus } : u));
+    } catch { toast("Status update failed", "error"); }
+  }
+
   // ── Site Plan handlers ────────────────────────────────────────────────────
   async function handleSave(form) {
     try {
@@ -2970,7 +3355,15 @@ export default function App() {
   function renderPage() {
     switch (page) {
       case "dashboard": return <DashboardPage session={session} org={org} data={data} />;
-      case "tenants": return (
+      case "payments": return (
+        <PaymentsPage
+          data={data}
+          orgId={orgId}
+          token={token}
+          toast={toast}
+          onStatusUpdate={handleStatusUpdate}
+        />
+      );
         <TenantsPage
           data={data}
           onEdit={r => { setEditItem(r); setIsNew(false); }}
