@@ -4531,7 +4531,6 @@ function OnboardingPage({ session, onComplete }) {
 
 // ─── Dashboard Page ───────────────────────────────────────────────────────
 function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
-  const email = session?.user?.email || "";
   const orgName = org?.name || "Your site";
 
   const stor = data.filter(d => d.category === "Storage");
