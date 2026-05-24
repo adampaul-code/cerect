@@ -1,4 +1,4 @@
-// Cerect v0.9 — Storage Management Platform
+// Cerect v1.0 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -1627,7 +1627,7 @@ function Legend() {
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [] }) {
+function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [], token }) {
   const [form, setForm] = useState({ ...item });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1861,6 +1861,16 @@ function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = 
               <textarea value={form.notes || ""} onChange={u("notes")} placeholder="Additional notes, special requirements…" />
             </div>
           </div>
+
+          {/* Documents section — only shown when editing an existing record */}
+          {!isNew && form.id && (
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 8 }}>
+              <div style={{ fontFamily: "var(--fh)", fontSize: 13, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>
+                📁 Documents
+              </div>
+              <TenantDocuments tenantId={form.id} orgId={form.org_id} token={token} />
+            </div>
+          )}
         </div>
 
         <div className="modal-footer">
@@ -2282,7 +2292,7 @@ function TenantsPage({ data, onEdit, onAdd, onArchive, setPage }) {
 
   function renderCell(t, key) {
     switch (key) {
-      case "unit":     return <td key={key} style={{ fontFamily: "var(--fh)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.label || ("Unit " + t.id)}</td>;
+      case "unit":     return <td key={key} style={{ fontFamily: "var(--fh)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.label || t.id}</td>;
       case "category": return <td key={key}><span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, fontWeight: 500, color: "var(--sub)" }}>{t.category}</span></td>;
       case "tenant":   return <td key={key} style={{ maxWidth: 180 }}>{t.tenant || <span style={{ color: "var(--sub)" }}>Vacant</span>}</td>;
       case "size":     return <td key={key} style={{ fontSize: 12 }}>{t.size || "—"}</td>;
@@ -3890,6 +3900,178 @@ async function updateDocTag(filePath, tag, token) {
   }
 }
 
+// ─── Tenant Documents (used inside Edit Modal) ────────────────────────────────
+function TenantDocuments({ tenantId, orgId, token }) {
+  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const [docs, setDocs] = useState([]);
+  const [tags, setTags] = useState({});
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [viewerDoc, setViewerDoc] = useState(null);
+  const [tagFilter, setTagFilter] = useState("all");
+  const inputRef = useRef(null);
+
+  async function reload() {
+    const [d, t] = await Promise.all([
+      listDocuments(safeId, token),
+      getDocTags(safeId, orgId, token),
+    ]);
+    setDocs(Array.isArray(d) ? d : []);
+    const tagMap = {};
+    (Array.isArray(t) ? t : []).forEach(r => { tagMap[r.file_path] = r; });
+    setTags(tagMap);
+  }
+
+  useEffect(() => {
+    if (!tenantId || !token) return;
+    reload();
+  }, [tenantId, token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleUpload(files) {
+    if (!files || !files.length) return;
+    setUploading(true);
+    let failed = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const path = await uploadDocument(file, safeId, token);
+        await saveDocTag(path, safeId, "Other", file.name, orgId, token);
+      } catch { failed++; }
+    }
+    await reload();
+    setUploading(false);
+    if (failed > 0) alert(`⚠️ ${failed} file(s) failed to upload.`);
+  }
+
+  async function handleDelete(doc) {
+    const path = `${safeId}/${doc.name}`;
+    if (!window.confirm(`Delete "${doc.name.replace(/^\d+_/, "")}"?`)) return;
+    await deleteDocument(path, token);
+    await deleteDocTag(path, token);
+    await reload();
+  }
+
+  async function handleTagChange(filePath, newTag) {
+    await updateDocTag(filePath, newTag, token);
+    const fresh = await getDocTags(safeId, orgId, token);
+    const tagMap = {};
+    (Array.isArray(fresh) ? fresh : []).forEach(r => { tagMap[r.file_path] = r; });
+    setTags(tagMap);
+  }
+
+  const allDocs = docs.filter(d => tagFilter === "all" || tags[`${safeId}/${d.name}`]?.tag === tagFilter);
+
+  return (
+    <div>
+      {/* Tag filters */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10, justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {["all", ...DOC_TAGS].map(t => (
+            <button
+              key={t}
+              className={`sp-btn ${tagFilter === t ? "active" : ""}`}
+              style={{ fontSize: 11, padding: "3px 8px" }}
+              onClick={() => setTagFilter(t)}
+            >
+              {t === "all" ? "All" : t}
+            </button>
+          ))}
+        </div>
+        {docs.length > 0 && (
+          <button className="sp-btn" style={{ fontSize: 11 }} onClick={async () => {
+            for (const doc of docs) {
+              const path = `${safeId}/${doc.name}`;
+              try {
+                const url = await getSignedUrl(path, token);
+                if (!url) continue;
+                const r = await fetch(url);
+                const blob = await r.blob();
+                const tagInfo = tags[path];
+                const displayName = (tagInfo?.original_name || doc.name).replace(/^\d+_/, "");
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = displayName;
+                a.click();
+                URL.revokeObjectURL(a.href);
+                await new Promise(res => setTimeout(res, 300));
+              } catch {}
+            }
+          }}>⬇️ Download All</button>
+        )}
+      </div>
+
+      {/* Upload zone */}
+      <div
+        style={{
+          border: `2px dashed ${dragOver ? "var(--gold)" : "var(--mist2)"}`,
+          borderRadius: "var(--r)",
+          padding: "16px",
+          textAlign: "center",
+          cursor: "pointer",
+          background: dragOver ? "#FFFDF5" : "var(--mist)",
+          transition: "all .15s",
+          marginBottom: 10,
+        }}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={e => { e.preventDefault(); setDragOver(false); handleUpload(e.dataTransfer.files); }}
+      >
+        <input ref={inputRef} type="file" multiple onChange={e => handleUpload(e.target.files)} style={{ display: "none" }} />
+        <div style={{ fontSize: 20, marginBottom: 4 }}>📎</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--navy)" }}>Drop files here or click to upload</div>
+        <div style={{ fontSize: 11, color: "var(--sub)", marginTop: 2 }}>Any file type supported</div>
+        {uploading && <div style={{ marginTop: 6, fontSize: 12, color: "var(--gold)" }}>⏳ Uploading…</div>}
+      </div>
+
+      {/* Document list */}
+      {allDocs.length > 0 && (
+        <div style={{ border: "1px solid var(--border)", borderRadius: "var(--r)", overflow: "hidden" }}>
+          {allDocs.map(doc => {
+            const path = `${safeId}/${doc.name}`;
+            const tagInfo = tags[path];
+            const displayName = (tagInfo?.original_name || doc.name).replace(/^\d+_/, "");
+            return (
+              <div key={doc.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 20, flexShrink: 0 }}>{fileIcon(displayName)}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                    <select
+                      key={tagInfo?.tag || "none"}
+                      style={{ fontSize: 11, padding: "2px 5px", borderRadius: 4, border: "1px solid var(--mist2)", color: "var(--navy)", background: "var(--mist)", fontFamily: "var(--fb)" }}
+                      defaultValue={tagInfo?.tag || ""}
+                      onChange={e => e.target.value && handleTagChange(path, e.target.value)}
+                    >
+                      <option value="">{tagInfo?.tag || "— Tag —"}</option>
+                      {DOC_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <span style={{ fontSize: 11, color: "var(--sub)" }}>{formatBytes(doc.metadata?.size)}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                  <button className="sp-btn" style={{ fontSize: 11, padding: "3px 8px" }} onClick={async () => {
+                    const url = await getSignedUrl(path, token);
+                    if (url) setViewerDoc({ url, name: displayName });
+                  }}>👁</button>
+                  <button className="sp-btn sp-btn-danger" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => handleDelete(doc)}>🗑️</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {allDocs.length === 0 && !uploading && (
+        <p style={{ fontSize: 12, color: "var(--sub)", textAlign: "center", marginTop: 8 }}>
+          {tagFilter === "all" ? "No documents yet" : "No documents with this tag"}
+        </p>
+      )}
+
+      {viewerDoc && <DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={() => setViewerDoc(null)} />}
+    </div>
+  );
+}
+
 // ─── Doc Viewer ───────────────────────────────────────────────────────────────
 function DocViewer({ url, name, onClose }) {
   const ext = (name || "").split(".").pop().toLowerCase();
@@ -4828,6 +5010,7 @@ export default function App() {
           onClose={() => setEditItem(null)}
           onSave={async form => { await handleSave(form); }}
           onDelete={async id => { await handleDelete(id); setEditItem(null); }}
+          token={token}
           onArchive={id => { handleArchive(id); setEditItem(null); }}
         />
       )}
