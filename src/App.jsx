@@ -1,4 +1,4 @@
-// Cerect v1.0 — Storage Management Platform
+// Cerect v1.1 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -4530,7 +4530,7 @@ function OnboardingPage({ session, onComplete }) {
 }
 
 // ─── Dashboard Page ───────────────────────────────────────────────────────
-function DashboardPage({ session, org, data = [] }) {
+function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
   const email = session?.user?.email || "";
   const orgName = org?.name || "Your site";
 
@@ -4542,15 +4542,54 @@ function DashboardPage({ session, org, data = [] }) {
   const totalRent = data.filter(u => u.rent && activeStatuses.includes(u.status)).reduce((a, b) => a + (Number(b.rent) || 0), 0);
   const occRate = stor.length > 0 ? Math.round(occ / stor.length * 100) : 0;
 
+  // Alerts
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const in60 = new Date(today); in60.setDate(in60.getDate() + 60);
+
+  function parseReviewDate(str) {
+    if (!str) return null;
+    const s = str.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const [y, m, d] = s.split("-").map(Number);
+      return new Date(y, m - 1, d);
+    }
+    return null;
+  }
+
+  const reviewSoon = data.filter(u => {
+    if (u.category === "Storage") return false;
+    if (!u.review || !activeStatuses.includes(u.status)) return false;
+    const d = parseReviewDate(u.review);
+    return d && d >= today && d <= in60;
+  });
+
+  const activeEnquiries = enquiries.filter(e => ["waiting", "contacted", "reserved"].includes(e.status));
+  const reservedEnquiries = enquiries.filter(e => e.status === "reserved");
+  const vacantUnits = data.filter(u => u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant && u.id));
+  const vacancyMatches = vacantUnits.map(u => {
+    const matches = activeEnquiries.filter(e => e.category === u.category);
+    return matches.length > 0 ? { unit: u, count: matches.length } : null;
+  }).filter(Boolean);
+
+  const enqByCategory = {
+    Storage: activeEnquiries.filter(e => e.category === "Storage").length,
+    Residential: activeEnquiries.filter(e => e.category === "Residential").length,
+    Commercial: activeEnquiries.filter(e => e.category === "Commercial").length,
+  };
+
+  function Alert({ color, bg, border, children }) {
+    return (
+      <div style={{ background: bg, border: `1.5px solid ${border}`, borderRadius: "var(--r)", padding: "12px 16px", marginBottom: 10, fontSize: 13, color }}>
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div className="page">
       <div className="mb-6">
-        <h1 style={{ fontFamily: "var(--fh)", fontSize: 22, fontWeight: 700, marginBottom: 4 }}>
-          Dashboard
-        </h1>
-        <p style={{ fontSize: 14, color: "var(--sub)" }}>
-          {orgName}
-        </p>
+        <h1 style={{ fontFamily: "var(--fh)", fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
+        <p style={{ fontSize: 14, color: "var(--sub)" }}>{orgName}</p>
       </div>
 
       <div className="kpi-grid">
@@ -4568,7 +4607,7 @@ function DashboardPage({ session, org, data = [] }) {
         ))}
       </div>
 
-      <div className="grid-2">
+      <div className="grid-2" style={{ marginBottom: 20 }}>
         <div className="card">
           <div className="card-title">Getting started</div>
           <div className="card-sub">Complete these steps to set up your site</div>
@@ -4579,15 +4618,7 @@ function DashboardPage({ session, org, data = [] }) {
             { step: 4, label: "Record a payment", done: false },
           ].map(s => (
             <div key={s.step} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: "50%",
-                background: s.done ? "var(--success)" : "var(--mist)",
-                border: s.done ? "none" : "1.5px solid var(--mist2)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 11, fontWeight: 600,
-                color: s.done ? "#fff" : "var(--sub)",
-                flexShrink: 0,
-              }}>
+              <div style={{ width: 24, height: 24, borderRadius: "50%", background: s.done ? "var(--success)" : "var(--mist)", border: s.done ? "none" : "1.5px solid var(--mist2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, color: s.done ? "#fff" : "var(--sub)", flexShrink: 0 }}>
                 {s.done ? "✓" : s.step}
               </div>
               <span style={{ fontSize: 14, color: s.done ? "var(--sub)" : "var(--text)" }}>{s.label}</span>
@@ -4596,22 +4627,52 @@ function DashboardPage({ session, org, data = [] }) {
         </div>
 
         <div className="card">
-          <div className="card-title">Your account</div>
-          <div className="card-sub">Organisation details</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {[
-              { label: "Organisation", value: orgName },
-              { label: "Email", value: email },
-              { label: "Plan", value: org?.plan === "trial" ? "Trial" : (org?.plan || "Trial") },
-            ].map(r => (
-              <div key={r.label} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
-                <span style={{ color: "var(--sub)" }}>{r.label}</span>
-                <span style={{ fontWeight: 500 }}>{r.value}</span>
-              </div>
-            ))}
-          </div>
+          <div className="card-title">Waiting list</div>
+          <div className="card-sub">Active enquiries by category</div>
+          {Object.entries(enqByCategory).map(([cat, count]) => (
+            <div key={cat} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--sub)" }}>{cat}</span>
+              <span style={{ fontWeight: 600 }}>{count}</span>
+            </div>
+          ))}
+          {reservedEnquiries.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, color: "var(--warning)", fontWeight: 600 }}>
+              <span>Reserved</span>
+              <span>{reservedEnquiries.length}</span>
+            </div>
+          )}
+          {activeEnquiries.length === 0 && <div style={{ fontSize: 13, color: "var(--sub)", paddingTop: 8 }}>No active enquiries</div>}
+          <button className="sp-btn" style={{ marginTop: 12, fontSize: 12 }} onClick={() => setPage("crm")}>View Enquiries →</button>
         </div>
       </div>
+
+      {/* Alerts */}
+      {vacancyMatches.length > 0 && (
+        <Alert color="#1A7F5A" bg="#EDF7F2" border="#A8DEC2">
+          <strong>🟢 Vacancy match</strong> — {vacancyMatches.length} vacant unit{vacancyMatches.length !== 1 ? "s" : ""} with waiting enquiries in the same category.{" "}
+          <span style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 600 }} onClick={() => setPage("crm")}>View CRM →</span>
+        </Alert>
+      )}
+
+      {reservedEnquiries.length > 0 && (
+        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
+          <strong>🔒 Reserved</strong> — {reservedEnquiries.map(e => (
+            <span key={e.id} style={{ marginRight: 12 }}>
+              {e.name}{e.earmarked_unit ? ` → Unit ${e.earmarked_unit}` : ""}
+            </span>
+          ))}
+        </Alert>
+      )}
+
+      {reviewSoon.length > 0 && (
+        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
+          <strong>📅 Lease review due</strong> — {reviewSoon.map(u => (
+            <span key={u.id} style={{ marginRight: 12 }}>
+              {u.label || u.id} ({u.review})
+            </span>
+          ))}
+        </Alert>
+      )}
     </div>
   );
 }
@@ -4686,6 +4747,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [data, setData] = useState([]);
   const [areas, setAreas] = useState([]);
+  const [enquiries, setEnquiries] = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [isNew, setIsNew] = useState(false);
@@ -4694,6 +4756,11 @@ export default function App() {
 
   const token = session?.access_token;
   const orgId = org?.id;
+
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [offlineToast, setOfflineToast] = useState(false);
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [showGlobalSearch, setShowGlobalSearch] = useState(false);
 
   // Restore session
   useEffect(() => {
@@ -4704,6 +4771,29 @@ export default function App() {
         if (s?.access_token) setSession(s);
       }
     } catch {}
+  }, []);
+
+  // Offline detection
+  useEffect(() => {
+    const onOnline = () => {
+      setOffline(false);
+      setOfflineToast(true);
+      setTimeout(() => setOfflineToast(false), 3000);
+    };
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => { window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); };
+  }, []);
+
+  // Escape key closes modal, Ctrl+K opens global search
+  useEffect(() => {
+    const handler = e => {
+      if (e.key === "Escape") { setEditItem(null); setShowGlobalSearch(false); }
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); setShowGlobalSearch(s => !s); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   // Load org whenever session changes
@@ -4727,8 +4817,9 @@ export default function App() {
     if (!token || !orgId) return;
     setDataLoading(true);
     try {
-      const [rows, areaRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token)]);
+      const [rows, areaRows, enqRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token), enquiryList(orgId, token)]);
       setData(Array.isArray(rows) ? rows : []);
+      setEnquiries(Array.isArray(enqRows) ? enqRows : []);
       if (Array.isArray(areaRows)) {
         setAreas(areaRows);
         // Auto-populate areas from existing tenants if areas table is empty
@@ -4751,6 +4842,23 @@ export default function App() {
   }, [token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Refresh on tab focus (catches long backgrounded sessions)
+  useEffect(() => {
+    async function handleVisibility() {
+      if (document.visibilityState !== "visible") return;
+      if (!session?.refresh_token) return;
+      try {
+        const fresh = await refreshSession(session.refresh_token);
+        if (fresh?.access_token) {
+          setSession(fresh);
+          localStorage.setItem("cerect_session", JSON.stringify(fresh));
+        }
+      } catch {}
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [session?.refresh_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh session every 50 minutes
   useEffect(() => {
@@ -4966,7 +5074,7 @@ export default function App() {
 
   function renderPage() {
     switch (page) {
-      case "dashboard": return <DashboardPage session={session} org={org} data={data} />;
+      case "dashboard": return <DashboardPage session={session} org={org} data={data} enquiries={enquiries} setPage={setPage} />;
       case "payments": return (
         <PaymentsPage
           data={data}
@@ -5057,6 +5165,59 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
+      {offline && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
+          ⚠️ No internet connection — changes may not save
+        </div>
+      )}
+      {offlineToast && (
+        <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 9999, background: "var(--success)", color: "#fff", padding: "10px 16px", borderRadius: "var(--r)", fontSize: 13, fontWeight: 500 }}>
+          ✅ Back online
+        </div>
+      )}
+      {showGlobalSearch && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(11,30,61,.55)", zIndex: 500, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 80 }}
+          onClick={e => e.target === e.currentTarget && setShowGlobalSearch(false)}>
+          <div style={{ background: "#fff", borderRadius: "var(--r2)", width: "100%", maxWidth: 560, boxShadow: "var(--shl)", overflow: "hidden" }}>
+            <input
+              autoFocus
+              placeholder="Search tenants, units, email, phone…"
+              value={globalSearch}
+              onChange={e => setGlobalSearch(e.target.value)}
+              style={{ width: "100%", fontFamily: "var(--fb)", fontSize: 16, padding: "16px 20px", border: "none", outline: "none", borderBottom: "1px solid var(--border)" }}
+            />
+            <div style={{ maxHeight: 360, overflowY: "auto" }}>
+              {globalSearch.length > 1 && (() => {
+                const q = globalSearch.toLowerCase();
+                const results = data.filter(t =>
+                  (t.tenant || "").toLowerCase().includes(q) ||
+                  (t.id || "").toLowerCase().includes(q) ||
+                  (t.email || "").toLowerCase().includes(q) ||
+                  (t.phone || "").toLowerCase().includes(q) ||
+                  (t.label || "").toLowerCase().includes(q) ||
+                  (t.notes || "").toLowerCase().includes(q) ||
+                  (t.address || "").toLowerCase().includes(q)
+                ).slice(0, 10);
+                if (results.length === 0) return <div style={{ padding: "20px", textAlign: "center", color: "var(--sub)", fontSize: 14 }}>No results found</div>;
+                return results.map(t => (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
+                    onClick={() => { setEditItem(t); setIsNew(false); setShowGlobalSearch(false); setGlobalSearch(""); }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{t.tenant || t.label || t.id}</div>
+                      <div style={{ fontSize: 12, color: "var(--sub)" }}>{t.label || t.id} · {t.category} · {t.status}</div>
+                    </div>
+                    <Pill s={t.status} />
+                  </div>
+                ));
+              })()}
+              {globalSearch.length <= 1 && (
+                <div style={{ padding: "16px 20px", fontSize: 13, color: "var(--sub)" }}>Type to search across all tenants and units</div>
+              )}
+            </div>
+            <div style={{ padding: "8px 20px", fontSize: 11, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>Press Esc to close</div>
+          </div>
+        </div>
+      )}
       <div className="app">
         <Sidebar
           page={page}
@@ -5073,6 +5234,14 @@ export default function App() {
               <span style={{ width: 20, height: 20, display: "block" }}>{Icon.menu}</span>
             </button>
             <div className="topbar-title">{pageTitle}</div>
+            <button
+              className="sp-btn"
+              style={{ fontSize: 12, gap: 6 }}
+              onClick={() => setShowGlobalSearch(s => !s)}
+              title="Global search (⌘K)"
+            >
+              🔍 Search
+            </button>
             <div className="topbar-org">{org?.name || "Trial"}</div>
           </div>
           {dataLoading && page === "siteplan" ? (
