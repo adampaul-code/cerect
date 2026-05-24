@@ -1,4 +1,4 @@
-// Cerect v0.5 — Storage Management Platform
+// Cerect v0.6 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -2787,6 +2787,448 @@ function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
   );
 }
 
+// ─── Enquiry helpers ──────────────────────────────────────────────────────────
+const ENQUIRY_STATUSES = {
+  reserved:  "🔒 Reserved",
+  waiting:   "⏳ Waiting",
+  contacted: "📞 Contacted",
+  converted: "✅ Converted",
+  lost:      "❌ Found elsewhere",
+  withdrawn: "🚫 No longer interested",
+  archived:  "📦 Archived",
+};
+
+async function enquiryList(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/enquiries?org_id=eq.${orgId}&order=enquiry_date.desc`,
+    { headers: authH(token) }
+  );
+  return r.ok ? r.json() : [];
+}
+
+async function enquirySave(data, orgId, token) {
+  const clean = { ...data, org_id: orgId, updated_at: new Date().toISOString() };
+  if (!clean.follow_up_date) clean.follow_up_date = null;
+  if (!clean.enquiry_date) clean.enquiry_date = null;
+  if (!clean.email) clean.email = null;
+  if (!clean.phone) clean.phone = null;
+  if (!clean.size_needed) clean.size_needed = null;
+  if (!clean.notes) clean.notes = null;
+  if (!clean.earmarked_unit) clean.earmarked_unit = null;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/enquiries`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify(clean),
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function enquiryUpdate(id, data, token) {
+  const clean = { ...data, updated_at: new Date().toISOString() };
+  if (clean.follow_up_date === "") clean.follow_up_date = null;
+  if (clean.enquiry_date === "") clean.enquiry_date = null;
+  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...authH(token), Prefer: "return=minimal" },
+    body: JSON.stringify(clean),
+  });
+}
+
+async function enquiryDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
+    method: "DELETE",
+    headers: authH(token),
+  });
+}
+
+// ─── Enquiries Page ───────────────────────────────────────────────────────────
+function EnquiriesPage({ orgId, token, data, toast }) {
+  const [enquiries, setEnquiries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [catFilter, setCatFilter] = useState("all");
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [convertEnquiry, setConvertEnquiry] = useState(null);
+  const [convertUnit, setConvertUnit] = useState("");
+  const [form, setForm] = useState({
+    name: "", email: "", phone: "", category: "Storage",
+    size_needed: "", notes: "", status: "waiting",
+    enquiry_date: new Date().toISOString().slice(0, 10),
+    follow_up_date: "", earmarked_unit: "",
+  });
+
+  const uf = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  useEffect(() => {
+    if (!orgId || !token) return;
+    enquiryList(orgId, token).then(d => {
+      setEnquiries(Array.isArray(d) ? d : []);
+      setLoading(false);
+    });
+  }, [orgId, token]);
+
+  async function reload() {
+    const d = await enquiryList(orgId, token);
+    setEnquiries(Array.isArray(d) ? d : []);
+  }
+
+  function openAdd() {
+    setForm({ name: "", email: "", phone: "", category: "Storage", size_needed: "", notes: "", status: "waiting", enquiry_date: new Date().toISOString().slice(0, 10), follow_up_date: "", earmarked_unit: "" });
+    setEditItem(null);
+    setShowForm(true);
+  }
+
+  function openEdit(e) {
+    setForm({ ...e, enquiry_date: e.enquiry_date || "", follow_up_date: e.follow_up_date || "", earmarked_unit: e.earmarked_unit || "" });
+    setEditItem(e);
+    setShowForm(true);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    if (editItem) {
+      await enquiryUpdate(editItem.id, form, token);
+      await reload();
+      setShowForm(false);
+    } else {
+      const saved = await enquirySave(form, orgId, token);
+      const newRecord = Array.isArray(saved) ? saved[0] : saved;
+      await reload();
+      if (newRecord?.id) {
+        setEditItem({ ...form, id: newRecord.id });
+        setForm(f => ({ ...f, id: newRecord.id }));
+      } else {
+        setShowForm(false);
+      }
+    }
+    setSaving(false);
+    toast(editItem ? "Enquiry saved" : "Enquiry added", "success");
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm("Remove this enquiry? This cannot be undone.")) return;
+    await enquiryDelete(id, token);
+    await reload();
+    setShowForm(false);
+    toast("Enquiry deleted", "success");
+  }
+
+  async function quickStatus(id, status) {
+    await enquiryUpdate(id, { status }, token);
+    setEnquiries(e => e.map(x => x.id === id ? { ...x, status } : x));
+  }
+
+  async function handleConvert() {
+    if (!convertUnit) { alert("Please select a unit first."); return; }
+    if (!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
+    const unit = data.find(u => u.id === convertUnit);
+    if (!unit) { alert("Unit not found."); return; }
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}&org_id=eq.${orgId}`, {
+        method: "PATCH",
+        headers: { ...authH(token), Prefer: "return=minimal" },
+        body: JSON.stringify({
+          tenant: convertEnquiry.name,
+          email: convertEnquiry.email || "",
+          phone: convertEnquiry.phone || "",
+          status: "new",
+          move_in_date: new Date().toISOString().slice(0, 10),
+          notes: convertEnquiry.notes || "",
+        }),
+      });
+      await enquiryUpdate(convertEnquiry.id, { status: "converted" }, token);
+      setEnquiries(enq => enq.map(e => e.id === convertEnquiry.id ? { ...e, status: "converted" } : e));
+      setConvertEnquiry(null);
+      setConvertUnit("");
+      toast(`${convertEnquiry.name} converted to tenant in unit ${convertUnit}`, "success");
+    } catch (e) {
+      toast("Conversion failed: " + e.message, "error");
+    }
+  }
+
+  function matchingVacantUnits(enq) {
+    return (data || []).filter(u =>
+      (u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant)) &&
+      (!enq.category || u.category === enq.category)
+    ).sort((a, b) => (a.id || "").localeCompare(b.id || ""));
+  }
+
+  function daysSince(dateStr) {
+    if (!dateStr) return null;
+    return Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+  }
+
+  function urgencyColor(e) {
+    const days = daysSince(e.enquiry_date);
+    if (days > 60) return "var(--danger)";
+    if (days > 30) return "var(--warning)";
+    return "var(--sub)";
+  }
+
+  const filtered = enquiries.filter(e => {
+    const ms = statusFilter === "all" ? e.status !== "archived" : e.status === statusFilter;
+    const mc = catFilter === "all" || e.category === catFilter;
+    return ms && mc;
+  });
+
+  const waiting = enquiries.filter(e => e.status === "waiting");
+  const contacted = enquiries.filter(e => e.status === "contacted");
+  const reserved = enquiries.filter(e => e.status === "reserved");
+
+  return (
+    <div className="page">
+      {/* KPI cards */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
+        <div className="kpi-card">
+          <div className="kpi-label">Waiting</div>
+          <div className="kpi-value">{waiting.length}</div>
+          <div className="kpi-meta">Active enquiries</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">Contacted</div>
+          <div className="kpi-value">{contacted.length}</div>
+          <div className="kpi-meta">Awaiting response</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">Reserved</div>
+          <div className="kpi-value">{reserved.length}</div>
+          <div className="kpi-meta">Earmarked for a unit</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          <button className={`sp-btn ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>All</button>
+          {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => (
+            <button key={k} className={`sp-btn ${statusFilter === k ? "active" : ""}`} onClick={() => setStatusFilter(k)}>{v}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["all", "Storage", "Residential", "Commercial"].map(c => (
+            <button key={c} className={`sp-btn ${catFilter === c ? "active" : ""}`} onClick={() => setCatFilter(c)}>{c === "all" ? "All" : c}</button>
+          ))}
+          <button className="sp-btn sp-btn-primary" onClick={openAdd}>+ Add Enquiry</button>
+        </div>
+      </div>
+
+      {/* Table */}
+      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
+
+      {!loading && filtered.length === 0 && (
+        <div className="card" style={{ textAlign: "center", padding: 48 }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No enquiries found</div>
+          <div style={{ fontSize: 13, color: "var(--sub)" }}>Click + Add Enquiry to record your first CRM entry.</div>
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Contact</th>
+                  <th>Category</th>
+                  <th>Size Needed</th>
+                  <th>Date</th>
+                  <th>Days Waiting</th>
+                  <th>Status</th>
+                  <th>Notes</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(e => (
+                  <tr key={e.id}>
+                    <td style={{ fontWeight: 600, color: "var(--navy)", whiteSpace: "nowrap" }}>{e.name}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {e.email && <div>{e.email}</div>}
+                      {e.phone && <div style={{ color: "var(--sub)" }}>{e.phone}</div>}
+                    </td>
+                    <td>
+                      <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, fontWeight: 500, color: "var(--sub)" }}>
+                        {e.category}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 12 }}>{e.size_needed || "—"}</td>
+                    <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                      {e.enquiry_date ? new Date(e.enquiry_date).toLocaleDateString("en-GB") : "—"}
+                    </td>
+                    <td style={{ fontWeight: 600, color: urgencyColor(e) }}>
+                      {daysSince(e.enquiry_date) != null ? daysSince(e.enquiry_date) + " days" : "—"}
+                      {e.status === "reserved" && e.earmarked_unit && (
+                        <div style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600, marginTop: 2 }}>🔒 {e.earmarked_unit}</div>
+                      )}
+                    </td>
+                    <td>
+                      <select
+                        value={e.status}
+                        onChange={ev => quickStatus(e.id, ev.target.value)}
+                        style={{ fontSize: 11, padding: "4px 6px", borderRadius: 5, border: "1px solid var(--mist2)", color: "var(--navy)", fontFamily: "var(--fb)" }}
+                      >
+                        {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ fontSize: 11, color: "var(--sub)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {e.notes || "—"}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => openEdit(e)}>Edit</button>
+                        {(e.status === "waiting" || e.status === "contacted" || e.status === "reserved") && (
+                          <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px", background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }}
+                            onClick={() => { setConvertEnquiry(e); setConvertUnit(e.earmarked_unit || ""); }}>
+                            🏠 Convert
+                          </button>
+                        )}
+                        <button className="sp-btn sp-btn-danger" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => handleDelete(e.id)}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ padding: "9px 16px", fontSize: 12, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>
+            {filtered.length} enquiries shown
+          </div>
+        </div>
+      )}
+
+      {/* Convert to Tenant Modal */}
+      {convertEnquiry && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setConvertEnquiry(null)}>
+          <div className="modal" style={{ maxWidth: 480 }}>
+            <div className="modal-header">
+              <div className="modal-title">Convert to Tenant — {convertEnquiry.name}</div>
+              <button className="modal-close" onClick={() => setConvertEnquiry(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>
+                {convertEnquiry.category} · {convertEnquiry.size_needed || "No size specified"}
+                {convertEnquiry.email ? ` · ${convertEnquiry.email}` : ""}
+              </div>
+              {(() => {
+                const vacant = matchingVacantUnits(convertEnquiry);
+                if (vacant.length === 0) return (
+                  <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: 14, fontSize: 13, color: "#7A5C00", marginBottom: 16 }}>
+                    ⚠️ No vacant {convertEnquiry.category} units available. Change a unit status to Available on the Site Plan first.
+                  </div>
+                );
+                return (
+                  <>
+                    <div className="form-grid-item full" style={{ marginBottom: 16 }}>
+                      <label>Select unit to assign</label>
+                      <select value={convertUnit} onChange={e => setConvertUnit(e.target.value)}>
+                        <option value="">— Choose a vacant unit —</option>
+                        {vacant.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.label || u.id}{u.size ? ` · ${u.size}` : ""}{u.row_name ? ` · ${u.row_name}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ background: "#EAF3DE", border: "1px solid #B5D98A", borderRadius: 7, padding: "10px 14px", fontSize: 12, color: "#3B6D11", marginBottom: 16 }}>
+                      ℹ️ This will set the tenant name, email, phone and status to New in the selected unit.
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+            <div className="modal-footer">
+              <button className="modal-btn modal-btn-outline" onClick={() => setConvertEnquiry(null)}>Cancel</button>
+              <button className="modal-btn" style={{ background: "var(--success)", color: "#fff" }} onClick={handleConvert} disabled={!convertUnit}>
+                ✅ Convert to Tenant
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit Modal */}
+      {showForm && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
+          <div className="modal">
+            <div className="modal-header">
+              <div className="modal-title">{editItem ? "Edit Enquiry" : "New Enquiry"}</div>
+              <button className="modal-close" onClick={() => setShowForm(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-grid">
+                <div className="form-grid-item full">
+                  <label>Name *</label>
+                  <input value={form.name} onChange={uf("name")} placeholder="Full name" autoFocus />
+                </div>
+                <div className="form-grid-item">
+                  <label>Email</label>
+                  <input type="email" value={form.email} onChange={uf("email")} placeholder="email@example.com" />
+                </div>
+                <div className="form-grid-item">
+                  <label>Phone</label>
+                  <input value={form.phone} onChange={uf("phone")} placeholder="07700 000000" />
+                </div>
+                <div className="form-grid-item">
+                  <label>Category</label>
+                  <select value={form.category} onChange={uf("category")}>
+                    {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="form-grid-item">
+                  <label>Size Needed</label>
+                  <input value={form.size_needed} onChange={uf("size_needed")} placeholder="e.g. Small, XL, 2-bed" />
+                </div>
+                <div className="form-grid-item">
+                  <label>Enquiry Date</label>
+                  <input type="date" value={form.enquiry_date} onChange={uf("enquiry_date")} />
+                </div>
+                <div className="form-grid-item">
+                  <label>Follow-up Date</label>
+                  <input type="date" value={form.follow_up_date} onChange={uf("follow_up_date")} />
+                </div>
+                <div className="form-grid-item">
+                  <label>Status</label>
+                  <select value={form.status} onChange={uf("status")}>
+                    {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </div>
+                {form.status === "reserved" && (
+                  <div className="form-grid-item full">
+                    <label>Earmarked Unit (optional)</label>
+                    <select value={form.earmarked_unit || ""} onChange={uf("earmarked_unit")}>
+                      <option value="">— Select a unit —</option>
+                      {(data || [])
+                        .filter(d => d.status === "leaving" || d.status === "available" || d.status === "vacant" || !d.tenant)
+                        .sort((a, b) => (a.id || "").localeCompare(b.id || ""))
+                        .map(d => <option key={d.id} value={d.id}>{d.label || d.id}{d.tenant ? ` (${d.tenant})` : ""} · {d.status || "vacant"}</option>)
+                      }
+                    </select>
+                  </div>
+                )}
+                <div className="form-grid-item full">
+                  <label>Notes</label>
+                  <textarea value={form.notes} onChange={uf("notes")} placeholder="Notes from conversations, preferences, special requirements…" style={{ minHeight: 80 }} />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              {editItem && <button className="modal-btn modal-btn-danger" onClick={() => handleDelete(editItem.id)}>Delete</button>}
+              <button className="modal-btn modal-btn-outline" onClick={() => setShowForm(false)}>{editItem ? "Close" : "Cancel"}</button>
+              <button className="modal-btn modal-btn-primary" onClick={handleSave} disabled={saving || !form.name}>
+                {saving ? "Saving…" : editItem ? "Save" : "Save & Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -3371,6 +3813,14 @@ export default function App() {
           onAdd={() => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
           onArchive={handleArchive}
           setPage={setPage}
+        />
+      );
+      case "crm": return (
+        <EnquiriesPage
+          orgId={orgId}
+          token={token}
+          data={data}
+          toast={toast}
         />
       );
       case "siteplan": return (
