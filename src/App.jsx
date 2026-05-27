@@ -4373,6 +4373,7 @@ const PRIORITY_COLOR = { Low: "#5A6E8A", Medium: "#C9A84C", High: "#E67E22", Urg
 const PRIORITY_BG = { Low: "#F0F4FA", Medium: "#FFFBEA", High: "#FFF3E0", Urgent: "#FFF0EE" };
 const BLANK_TASK = { title: "", category: "General", priority: "Medium", assigned_to: "", due_date: "", recurrence: "None", reminder_days: 7, notes: "", status: "Open", linked_unit: "" };
 
+// eslint-disable-next-line no-unused-vars
 async function loginLogRecord(email, token) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/login_log`, {
