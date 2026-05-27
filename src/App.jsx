@@ -1,4 +1,4 @@
-// Cerect v1.2 — Storage Management Platform
+// Cerect v1.3 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -4364,6 +4364,549 @@ function DocumentsPage({ data, orgId, token, toast }) {
   );
 }
 
+// ─── Task helpers ─────────────────────────────────────────────────────────────
+const TASK_CATEGORIES = ["Storage", "Residential", "Commercial", "General"];
+const TASK_PRIORITIES = ["Low", "Medium", "High", "Urgent"];
+const TASK_STATUSES = ["Open", "In Progress", "Done"];
+const TASK_RECURRENCE = ["None", "Weekly", "Fortnightly", "Monthly", "Quarterly", "Annually"];
+const PRIORITY_COLOR = { Low: "#5A6E8A", Medium: "#C9A84C", High: "#E67E22", Urgent: "#C0392B" };
+const PRIORITY_BG = { Low: "#F0F4FA", Medium: "#FFFBEA", High: "#FFF3E0", Urgent: "#FFF0EE" };
+const BLANK_TASK = { title: "", category: "General", priority: "Medium", assigned_to: "", due_date: "", recurrence: "None", reminder_days: 7, notes: "", status: "Open", linked_unit: "" };
+
+async function loginLogRecord(email, token) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/login_log`, {
+      method: "POST",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ email, logged_in_at: new Date().toISOString() }),
+    });
+  } catch {}
+}
+
+async function taskList(orgId, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/tasks?org_id=eq.${orgId}&order=due_date.asc.nullslast,created_at.asc`,
+    { headers: authH(token) }
+  );
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+async function taskSave(task, token) {
+  const clean = { ...task };
+  if (!clean.due_date) clean.due_date = null;
+  if (!clean.assigned_to) clean.assigned_to = null;
+  if (!clean.linked_unit) clean.linked_unit = null;
+  if (!clean.notes) clean.notes = null;
+  if (!clean.category) clean.category = null;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify(clean),
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function taskUpdate(id, data, token) {
+  const clean = { ...data };
+  if (clean.due_date === "") clean.due_date = null;
+  if (clean.assigned_to === "") clean.assigned_to = null;
+  if (clean.linked_unit === "") clean.linked_unit = null;
+  if (clean.notes === "") clean.notes = null;
+  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...authH(token), Prefer: "return=minimal" },
+    body: JSON.stringify(clean),
+  });
+}
+
+async function taskDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
+    method: "DELETE", headers: authH(token),
+  });
+}
+
+function nextOccurrence(dueDate, recurrence) {
+  if (!dueDate || recurrence === "None") return null;
+  const d = new Date(dueDate);
+  if (recurrence === "Weekly") d.setDate(d.getDate() + 7);
+  else if (recurrence === "Fortnightly") d.setDate(d.getDate() + 14);
+  else if (recurrence === "Monthly") d.setMonth(d.getMonth() + 1);
+  else if (recurrence === "Quarterly") d.setMonth(d.getMonth() + 3);
+  else if (recurrence === "Annually") d.setFullYear(d.getFullYear() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// ─── Tasks Page ───────────────────────────────────────────────────────────────
+function TasksPage({ orgId, token, toast, data = [] }) {
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editTask, setEditTask] = useState(null);
+  const [form, setForm] = useState({ ...BLANK_TASK });
+  const [saving, setSaving] = useState(false);
+  const [filterStatus, setFilterStatus] = useState("active");
+  const [filterCat, setFilterCat] = useState("all");
+  const [dbError, setDbError] = useState(false);
+  const [workerView, setWorkerView] = useState(null);
+
+  const uf = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  useEffect(() => {
+    if (!orgId || !token) return;
+    taskList(orgId, token)
+      .then(t => { setTasks(Array.isArray(t) ? t : []); setDbError(false); setLoading(false); })
+      .catch(() => { setDbError(true); setTasks([]); setLoading(false); });
+  }, [orgId, token]);
+
+  function openAdd() { setForm({ ...BLANK_TASK, org_id: orgId }); setEditTask(null); setShowForm(true); }
+  function openEdit(t) { setForm({ ...t }); setEditTask(t); setShowForm(true); }
+
+  async function handleSave() {
+    if (!form.title.trim()) { toast("Please enter a task title", "error"); return; }
+    setSaving(true);
+    try {
+      if (editTask) {
+        await taskUpdate(editTask.id, form, token);
+        setTasks(ts => ts.map(t => t.id === editTask.id ? { ...t, ...form } : t));
+        toast("Task updated", "success");
+      } else {
+        const saved = await taskSave({ ...form, org_id: orgId }, token);
+        const rec = Array.isArray(saved) ? saved[0] : saved;
+        if (rec?.id) { setTasks(ts => [...ts, rec]); toast("Task added", "success"); }
+        else { toast("Could not save task", "error"); }
+      }
+      setShowForm(false);
+    } catch (e) { toast("Save failed: " + e.message, "error"); }
+    setSaving(false);
+  }
+
+  async function handleMarkDone(task) {
+    await taskUpdate(task.id, { status: "Done" }, token);
+    let updated = [...tasks.map(t => t.id === task.id ? { ...t, status: "Done" } : t)];
+    if (task.recurrence && task.recurrence !== "None" && task.due_date) {
+      const nextDate = nextOccurrence(task.due_date, task.recurrence);
+      const nextTask = { ...task, status: "Open", due_date: nextDate, org_id: orgId };
+      delete nextTask.id; delete nextTask.created_at;
+      const saved = await taskSave(nextTask, token);
+      const rec = Array.isArray(saved) ? saved[0] : saved;
+      if (rec?.id) { updated = [...updated, rec]; toast(`Done · Next ${task.recurrence.toLowerCase()} task created for ${nextDate}`, "success"); }
+    } else {
+      toast("Task marked as done", "success");
+    }
+    setTasks(updated);
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm("Delete this task?")) return;
+    await taskDelete(id, token);
+    setTasks(ts => ts.filter(t => t.id !== id));
+    toast("Task deleted", "success");
+  }
+
+  async function handleReopen(task) {
+    await taskUpdate(task.id, { status: "Open" }, token);
+    setTasks(ts => ts.map(t => t.id === task.id ? { ...t, status: "Open" } : t));
+    setFilterStatus("active");
+    toast("Task reopened", "success");
+  }
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  function isOverdue(t) { return t.due_date && new Date(t.due_date) < today && t.status !== "Done"; }
+  function isDueSoon(t) {
+    if (!t.due_date || t.status === "Done") return false;
+    const d = new Date(t.due_date);
+    const diff = Math.ceil((d - today) / 86400000);
+    return diff >= 0 && diff <= (t.reminder_days || 7);
+  }
+
+  let filtered = tasks.filter(t => {
+    if (filterStatus === "active") return t.status !== "Done";
+    if (filterStatus === "done") return t.status === "Done";
+    return true;
+  });
+  if (filterCat !== "all") filtered = filtered.filter(t => t.category === filterCat);
+
+  filtered = [
+    ...filtered.filter(t => isOverdue(t)).sort((a, b) => new Date(a.due_date) - new Date(b.due_date)),
+    ...filtered.filter(t => !isOverdue(t) && t.due_date).sort((a, b) => new Date(a.due_date) - new Date(b.due_date)),
+    ...filtered.filter(t => !t.due_date),
+  ];
+
+  const openCount = tasks.filter(t => t.status !== "Done").length;
+  const overdueCount = tasks.filter(t => isOverdue(t)).length;
+  const dueSoonCount = tasks.filter(t => isDueSoon(t) && !isOverdue(t)).length;
+  const unitOptions = data.filter(u => u.id).sort((a, b) => (a.id || "").localeCompare(b.id || ""));
+
+  return (
+    <div className="page">
+      {dbError && (
+        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "14px 18px", marginBottom: 18, fontSize: 13, color: "#5D4037" }}>
+          <strong>⚙️ One-time setup required</strong> — Run this SQL in your Supabase SQL editor:
+          <code style={{ display: "block", background: "#F5F5F5", padding: "10px 12px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", whiteSpace: "pre-wrap", marginTop: 8 }}>
+            {`create table tasks (\n  id uuid primary key default gen_random_uuid(),\n  org_id uuid,\n  title text not null,\n  category text,\n  priority text default 'Medium',\n  assigned_to text,\n  due_date date,\n  recurrence text default 'None',\n  reminder_days integer default 7,\n  notes text,\n  status text default 'Open',\n  linked_unit text,\n  created_at timestamptz default now()\n);\nalter table tasks disable row level security;\ngrant select, insert, update, delete on table tasks to anon, authenticated;`}
+          </code>
+        </div>
+      )}
+
+      {/* KPI cards */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
+        <div className="kpi-card">
+          <div className="kpi-label">Open Tasks</div>
+          <div className="kpi-value">{openCount}</div>
+          <div className="kpi-meta">{tasks.length} total</div>
+        </div>
+        <div className="kpi-card" style={{ background: overdueCount > 0 ? PRIORITY_BG.Urgent : "" }}>
+          <div className="kpi-label">Overdue</div>
+          <div className="kpi-value" style={{ color: overdueCount > 0 ? PRIORITY_COLOR.Urgent : "" }}>{overdueCount}</div>
+          <div className="kpi-meta">Past due date</div>
+        </div>
+        <div className="kpi-card" style={{ background: dueSoonCount > 0 ? PRIORITY_BG.High : "" }}>
+          <div className="kpi-label">Due Soon</div>
+          <div className="kpi-value" style={{ color: dueSoonCount > 0 ? PRIORITY_COLOR.High : "" }}>{dueSoonCount}</div>
+          <div className="kpi-meta">Within reminder window</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["active", "Open"], ["done", "Done"], ["all", "All"]].map(([v, l]) => (
+          <button key={v} className={`sp-btn ${filterStatus === v ? "active" : ""}`} onClick={() => setFilterStatus(v)}>{l}</button>
+        ))}
+        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={{ fontSize: 12, padding: "6px 10px", border: "1.5px solid var(--mist2)", borderRadius: 7, fontFamily: "var(--fb)", color: "var(--text)" }}>
+          <option value="all">All categories</option>
+          {TASK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <button className="sp-btn sp-btn-primary" style={{ marginLeft: "auto" }} onClick={openAdd}>+ Add Task</button>
+      </div>
+
+      {/* Task list */}
+      <div className="card" style={{ padding: 0 }}>
+        {loading && <div style={{ padding: 24, textAlign: "center", color: "var(--sub)" }}>Loading…</div>}
+        {!loading && filtered.length === 0 && (
+          <div style={{ padding: 32, textAlign: "center", color: "var(--sub)" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+            {filterStatus === "active" ? "No open tasks — all clear!" : "No tasks found"}
+          </div>
+        )}
+        {!loading && filtered.map(task => {
+          const overdue = isOverdue(task);
+          const soon = isDueSoon(task) && !overdue;
+          const done = task.status === "Done";
+          return (
+            <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "13px 16px", borderBottom: "1px solid var(--border)", background: overdue ? PRIORITY_BG.Urgent : soon ? PRIORITY_BG.High : done ? "#FAFAFA" : "", opacity: done ? 0.7 : 1 }}>
+              <div style={{ flexShrink: 0, paddingTop: 2 }}>
+                {done
+                  ? <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleReopen(task)}>↩ Reopen</button>
+                  : <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={() => handleMarkDone(task)}>✓ Done</button>
+                }
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+                  <span style={{ fontSize: 13, fontWeight: done ? 400 : 600, color: done ? "var(--sub)" : "var(--text)", textDecoration: done ? "line-through" : "none" }}>{task.title}</span>
+                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: PRIORITY_BG[task.priority] || "#F0F4FA", color: PRIORITY_COLOR[task.priority] || "var(--sub)", fontWeight: 600 }}>{task.priority}</span>
+                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: "var(--mist)", color: "var(--sub)" }}>{task.category}</span>
+                  {task.recurrence && task.recurrence !== "None" && (
+                    <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: "#EEF4FF", color: "#3B5FA0" }}>🔁 {task.recurrence}</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--sub)", display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {task.due_date && (
+                    <span style={{ color: overdue ? "var(--danger)" : soon ? PRIORITY_COLOR.High : "var(--sub)", fontWeight: overdue || soon ? 600 : 400 }}>
+                      📅 {overdue ? "Overdue: " : soon ? "Due soon: " : "Due: "}{new Date(task.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                    </span>
+                  )}
+                  {task.assigned_to && (
+                    <span style={{ cursor: "pointer", color: "var(--navy)", fontWeight: 500, textDecoration: "underline" }} onClick={e => { e.stopPropagation(); setWorkerView(task.assigned_to); }}>
+                      👤 {task.assigned_to}
+                    </span>
+                  )}
+                  {task.linked_unit && <span>📦 Unit {task.linked_unit}</span>}
+                  {task.notes && <span style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>💬 {task.notes}</span>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => openEdit(task)}>Edit</button>
+                <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleDelete(task.id)}>🗑️</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Worker View Modal */}
+      {workerView && (() => {
+        const workerTasks = tasks.filter(t => t.assigned_to === workerView);
+        const open = workerTasks.filter(t => t.status !== "Done");
+        const done = workerTasks.filter(t => t.status === "Done");
+        const tod = new Date(); tod.setHours(0, 0, 0, 0);
+        return (
+          <div className="modal-ov" onClick={e => e.target === e.currentTarget && setWorkerView(null)}>
+            <div className="modal" style={{ maxWidth: 660, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+              <div className="modal-header" style={{ flexShrink: 0 }}>
+                <div className="modal-title">👤 {workerView}</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => {
+                    const w = window.open("", "_blank");
+                    w.document.write(`<html><head><title>Tasks — ${workerView}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#0B1E3D}h1{font-size:18px;margin-bottom:4px}h2{font-size:13px;color:#5A6E8A;font-weight:normal;margin-bottom:20px}.task{padding:8px 0;border-bottom:1px solid #eee}.title{font-size:13px;font-weight:600;margin-bottom:3px}.meta{font-size:11px;color:#5A6E8A}@media print{body{padding:0}}</style></head><body>`);
+                    w.document.write(`<h1>Tasks — ${workerView}</h1><h2>Printed ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</h2>`);
+                    if (open.length > 0) {
+                      w.document.write("<h3>Open Tasks</h3>");
+                      open.forEach(t => {
+                        const ov = t.due_date && new Date(t.due_date) < tod;
+                        w.document.write(`<div class="task"><div class="title">${t.title}</div><div class="meta">${t.priority} · ${t.category}${t.due_date ? " · Due: " + new Date(t.due_date).toLocaleDateString("en-GB") + (ov ? " (OVERDUE)" : "") : ""}${t.linked_unit ? " · Unit " + t.linked_unit : ""}${t.notes ? "<br>" + t.notes : ""}</div></div>`);
+                      });
+                    }
+                    if (done.length > 0) {
+                      w.document.write("<h3>Completed</h3>");
+                      done.forEach(t => { w.document.write(`<div class="task"><div class="title" style="text-decoration:line-through;color:#888">${t.title}</div></div>`); });
+                    }
+                    w.document.write("</body></html>"); w.document.close(); setTimeout(() => w.print(), 500);
+                  }}>🖨️ Print</button>
+                  <button className="modal-close" onClick={() => setWorkerView(null)}>✕</button>
+                </div>
+              </div>
+              <div style={{ overflowY: "auto", flex: 1, padding: "16px 22px" }}>
+                <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
+                  <div className="kpi-card"><div className="kpi-label">Open</div><div className="kpi-value">{open.length}</div></div>
+                  <div className="kpi-card"><div className="kpi-label">Done</div><div className="kpi-value">{done.length}</div></div>
+                  <div className="kpi-card"><div className="kpi-label">Overdue</div><div className="kpi-value" style={{ color: workerTasks.filter(t => t.due_date && new Date(t.due_date) < tod && t.status !== "Done").length > 0 ? "var(--danger)" : "" }}>{workerTasks.filter(t => t.due_date && new Date(t.due_date) < tod && t.status !== "Done").length}</div></div>
+                </div>
+                {open.map(t => (
+                  <div key={t.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</span>
+                      <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: PRIORITY_BG[t.priority], color: PRIORITY_COLOR[t.priority], fontWeight: 600 }}>{t.priority}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--sub)" }}>
+                      {t.due_date && <span style={{ marginRight: 10 }}>📅 {new Date(t.due_date).toLocaleDateString("en-GB")}</span>}
+                      {t.linked_unit && <span style={{ marginRight: 10 }}>📦 {t.linked_unit}</span>}
+                      {t.notes && <span>💬 {t.notes}</span>}
+                    </div>
+                  </div>
+                ))}
+                {workerTasks.length === 0 && <div style={{ textAlign: "center", color: "var(--sub)", padding: "32px 0" }}>No tasks for {workerView}</div>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Add/Edit Modal */}
+      {showForm && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
+          <div className="modal" style={{ maxWidth: 520 }}>
+            <div className="modal-header">
+              <div className="modal-title">{editTask ? "Edit Task" : "Add Task"}</div>
+              <button className="modal-close" onClick={() => setShowForm(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-grid">
+                <div className="form-grid-item full">
+                  <label>Task Title *</label>
+                  <input autoFocus value={form.title} onChange={uf("title")} placeholder="e.g. Check fire alarms, Mow grass…" />
+                </div>
+                <div className="form-grid-item">
+                  <label>Category</label>
+                  <select value={form.category} onChange={uf("category")}>{TASK_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+                </div>
+                <div className="form-grid-item">
+                  <label>Priority</label>
+                  <select value={form.priority} onChange={uf("priority")}>{TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}</select>
+                </div>
+                <div className="form-grid-item">
+                  <label>Due Date</label>
+                  <input type="date" value={form.due_date || ""} onChange={uf("due_date")} />
+                </div>
+                <div className="form-grid-item">
+                  <label>Assigned To</label>
+                  <input value={form.assigned_to || ""} onChange={uf("assigned_to")} placeholder="Name or leave blank" />
+                </div>
+                <div className="form-grid-item">
+                  <label>Recurrence</label>
+                  <select value={form.recurrence || "None"} onChange={uf("recurrence")}>{TASK_RECURRENCE.map(r => <option key={r}>{r}</option>)}</select>
+                </div>
+                <div className="form-grid-item">
+                  <label>Remind me (days before)</label>
+                  <select value={form.reminder_days ?? 7} onChange={e => setForm(f => ({ ...f, reminder_days: Number(e.target.value) }))}>
+                    <option value={0}>On the day</option>
+                    {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{d} day{d !== 1 ? "s" : ""} before</option>)}
+                  </select>
+                </div>
+                <div className="form-grid-item">
+                  <label>Linked Unit (optional)</label>
+                  <input value={form.linked_unit || ""} onChange={uf("linked_unit")} placeholder="Type unit ID…" list="task-unit-list" />
+                  <datalist id="task-unit-list">
+                    {unitOptions.map(d => <option key={d.id} value={d.id}>{d.label || d.id}{d.tenant ? ` · ${d.tenant}` : ""}</option>)}
+                  </datalist>
+                </div>
+                <div className="form-grid-item">
+                  <label>Status</label>
+                  <select value={form.status || "Open"} onChange={uf("status")}>{TASK_STATUSES.map(s => <option key={s}>{s}</option>)}</select>
+                </div>
+                <div className="form-grid-item full">
+                  <label>Notes</label>
+                  <textarea value={form.notes || ""} onChange={uf("notes")} rows={3} placeholder="Any additional details…" />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              {editTask && <button className="modal-btn modal-btn-danger" onClick={() => { handleDelete(editTask.id); setShowForm(false); }}>Delete</button>}
+              <button className="modal-btn modal-btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
+              <button className="modal-btn modal-btn-primary" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : editTask ? "Save Changes" : "Add Task"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Calendar Page ────────────────────────────────────────────────────────────
+function CalendarPage({ data, enquiries = [], tasks = [] }) {
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth());
+  const [selectedDay, setSelectedDay] = useState(null);
+
+  function prevMonth() { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); }
+  function nextMonth() { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); }
+
+  const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleString("en-GB", { month: "long", year: "numeric" });
+  const events = {};
+  function addEvent(dateStr, event) {
+    if (!dateStr) return;
+    const d = dateStr.slice(0, 10);
+    if (!d || d.length < 10) return;
+    if (!events[d]) events[d] = [];
+    events[d].push(event);
+  }
+
+  data.forEach(u => {
+    if (!u.id) return;
+    const name = u.tenant || u.label || u.id;
+    if (u.move_in_date) addEvent(u.move_in_date, { type: "move_in", label: `Move-in: ${name}`, color: "#1A7F5A", unit: u.id });
+    if (u.move_out_date) addEvent(u.move_out_date, { type: "move_out", label: `Move-out: ${name}`, color: "#C0392B", unit: u.id });
+    if (u.review && u.category !== "Storage") {
+      const d = u.review.length === 10 ? u.review : null;
+      if (d) addEvent(d, { type: "review", label: `Review: ${name}`, color: "#C9A84C", unit: u.id });
+    }
+  });
+
+  enquiries.forEach(e => {
+    if (e.follow_up_date && e.status !== "archived" && e.status !== "converted") {
+      addEvent(e.follow_up_date, { type: "followup", label: `Follow-up: ${e.name}`, color: "#7B3FA0", unit: null });
+    }
+  });
+
+  tasks.forEach(t => {
+    if (t.due_date && t.status !== "Done") {
+      const col = t.priority === "Urgent" ? "#C0392B" : t.priority === "High" ? "#E67E22" : "#E8901A";
+      addEvent(t.due_date, { type: "task", label: `🔧 ${t.title}`, color: col, unit: t.linked_unit || null });
+    }
+  });
+
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+  const startOffset = (firstDay + 6) % 7;
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const todayStr = now.toISOString().slice(0, 10);
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function dateStr(day) {
+    if (!day) return null;
+    return `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  const selectedEvents = selectedDay ? (events[dateStr(selectedDay)] || []) : [];
+
+  return (
+    <div className="page">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button className="sp-btn" onClick={prevMonth}>← Prev</button>
+          <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", minWidth: 200, textAlign: "center" }}>{monthLabel}</div>
+          <button className="sp-btn" onClick={nextMonth}>Next →</button>
+        </div>
+        <button className="sp-btn" onClick={() => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()); setSelectedDay(null); }}>Today</button>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["#1A7F5A", "Move-in"], ["#C0392B", "Move-out"], ["#C9A84C", "Lease review"], ["#7B3FA0", "CRM follow-up"], ["#E8901A", "Task due"]].map(([c, l]) => (
+          <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--sub)" }}>
+            <div style={{ width: 10, height: 10, borderRadius: 2, background: c, flexShrink: 0 }} />{l}
+          </div>
+        ))}
+      </div>
+
+      {/* Calendar grid */}
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", borderBottom: "1px solid var(--border)" }}>
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => (
+            <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, fontWeight: 600, color: "var(--sub)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
+          {cells.map((day, i) => {
+            const ds = dateStr(day);
+            const dayEvents = ds ? (events[ds] || []) : [];
+            const isToday = ds === todayStr;
+            const isSelected = day === selectedDay;
+            return (
+              <div key={i} onClick={() => day && setSelectedDay(day === selectedDay ? null : day)}
+                style={{ minHeight: 80, padding: "6px 8px", borderRight: i % 7 !== 6 ? "1px solid var(--border)" : "none", borderBottom: "1px solid var(--border)", background: isSelected ? "#EEF4FF" : isToday ? "#F8FAFF" : "", cursor: day ? "pointer" : "default", opacity: day ? 1 : 0.3 }}>
+                {day && (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: isToday ? 700 : 500, marginBottom: 4, ...(isToday ? { background: "var(--navy)", color: "#fff", width: 22, height: 22, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center" } : { color: "var(--text)" }) }}>{day}</div>
+                    {dayEvents.slice(0, 3).map((e, j) => (
+                      <div key={j} style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, marginBottom: 2, background: e.color + "22", color: e.color, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.label}>{e.label}</div>
+                    ))}
+                    {dayEvents.length > 3 && <div style={{ fontSize: 10, color: "var(--sub)", paddingLeft: 5 }}>+{dayEvents.length - 3} more</div>}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Day detail panel */}
+      {selectedDay && (
+        <div className="card" style={{ marginTop: 16, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14 }}>
+              {new Date(viewYear, viewMonth, selectedDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+            </div>
+            <button className="sp-btn" onClick={() => setSelectedDay(null)}>✕</button>
+          </div>
+          {selectedEvents.length === 0
+            ? <div style={{ padding: "20px", textAlign: "center", color: "var(--sub)", fontSize: 13 }}>No events on this day</div>
+            : selectedEvents.map((e, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ width: 4, height: 36, borderRadius: 2, background: e.color, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{e.label}</div>
+                  <div style={{ fontSize: 11, color: "var(--sub)", marginTop: 2 }}>
+                    {e.type === "move_in" && "Tenant move-in"}
+                    {e.type === "move_out" && "Tenant move-out"}
+                    {e.type === "review" && "Lease review due"}
+                    {e.type === "followup" && "CRM follow-up reminder"}
+                    {e.type === "task" && "Task due"}
+                    {e.unit && ` · Unit ${e.unit}`}
+                  </div>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -4532,7 +5075,7 @@ function OnboardingPage({ session, onComplete }) {
 }
 
 // ─── Dashboard Page ───────────────────────────────────────────────────────
-function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
+function DashboardPage({ session, org, data = [], enquiries = [], tasks = [], setPage }) {
   const orgName = org?.name || "Your site";
 
   const stor = data.filter(d => d.category === "Storage");
@@ -4543,7 +5086,15 @@ function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
   const totalRent = data.filter(u => u.rent && activeStatuses.includes(u.status)).reduce((a, b) => a + (Number(b.rent) || 0), 0);
   const occRate = stor.length > 0 ? Math.round(occ / stor.length * 100) : 0;
 
-  const arrears = data.filter(u => u.status === "arrears");
+  const tasksDue = tasks ? tasks.filter(t => {
+    if (t.status === "Done") return false;
+    if (!t.due_date) return false;
+    const tod = new Date(); tod.setHours(0, 0, 0, 0);
+    const d = new Date(t.due_date);
+    const diff = Math.ceil((d - tod) / 86400000);
+    return diff <= (t.reminder_days || 7);
+  }) : [];
+  const tasksOverdue = tasksDue.filter(t => new Date(t.due_date) < today);
   const leaving = data.filter(u => u.status === "leaving");
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -4650,6 +5201,21 @@ function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
       </div>
 
       {/* Alerts */}
+      {tasksOverdue.length > 0 && (
+        <Alert color="#C0392B" bg="#FFF0EE" border="#FFCDD2">
+          <strong>🔧 Tasks overdue</strong> — {tasksOverdue.map(t => (
+            <span key={t.id} style={{ marginRight: 12 }}>{t.title}{t.due_date ? ` · ${new Date(t.due_date).toLocaleDateString("en-GB")}` : ""}</span>
+          ))}
+          <span style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 600, marginLeft: 8 }} onClick={() => setPage("tasks")}>View Tasks →</span>
+        </Alert>
+      )}
+      {tasksDue.filter(t => !tasksOverdue.includes(t)).length > 0 && (
+        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
+          <strong>🔧 Tasks due soon</strong> — {tasksDue.filter(t => !tasksOverdue.includes(t)).map(t => (
+            <span key={t.id} style={{ marginRight: 12 }}>{t.title}{t.due_date ? ` · ${new Date(t.due_date).toLocaleDateString("en-GB")}` : ""}</span>
+          ))}
+        </Alert>
+      )}
       {arrears.length > 0 && (
         <Alert color="#C0392B" bg="#FFF0EE" border="#FFCDD2">
           <strong>⚠️ In arrears</strong> — {arrears.map(u => (
@@ -4698,12 +5264,14 @@ function DashboardPage({ session, org, data = [], enquiries = [], setPage }) {
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────
 const NAV = [
-  { id: "dashboard", label: "Dashboard", icon: "dashboard", section: null },
+  { id: "dashboard", label: "Dashboard",  icon: "dashboard", section: null },
   { id: "siteplan",  label: "Site Plan",  icon: "siteplan",  section: "Manage" },
   { id: "tenants",   label: "Tenants",    icon: "tenants",   section: null },
   { id: "payments",  label: "Payments",   icon: "payments",  section: null },
   { id: "crm",       label: "Enquiries",  icon: "crm",       section: null },
-  { id: "documents", label: "Documents",  icon: "documents", section: null },
+  { id: "calendar",  label: "Calendar",   icon: "calendar",  section: null },
+  { id: "tasks",     label: "Tasks",      icon: "tasks",     section: null },
+  { id: "documents", label: "Documents",  icon: "documents", section: "Data" },
   { id: "archive",   label: "Archive",    icon: "archive",   section: null },
   { id: "users",     label: "Users",      icon: "users",     section: "Admin" },
   { id: "settings",  label: "Settings",   icon: "settings",  section: null },
@@ -4767,6 +5335,7 @@ export default function App() {
   const [data, setData] = useState([]);
   const [areas, setAreas] = useState([]);
   const [enquiries, setEnquiries] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [isNew, setIsNew] = useState(false);
@@ -4836,9 +5405,10 @@ export default function App() {
     if (!token || !orgId) return;
     setDataLoading(true);
     try {
-      const [rows, areaRows, enqRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token), enquiryList(orgId, token)]);
+      const [rows, areaRows, enqRows, taskRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token), enquiryList(orgId, token), taskList(orgId, token).catch(() => [])]);
       setData(Array.isArray(rows) ? rows : []);
       setEnquiries(Array.isArray(enqRows) ? enqRows : []);
+      setTasks(Array.isArray(taskRows) ? taskRows : []);
       if (Array.isArray(areaRows)) {
         setAreas(areaRows);
         // Auto-populate areas from existing tenants if areas table is empty
@@ -5093,7 +5663,7 @@ export default function App() {
 
   function renderPage() {
     switch (page) {
-      case "dashboard": return <DashboardPage session={session} org={org} data={data} enquiries={enquiries} setPage={setPage} />;
+      case "dashboard": return <DashboardPage session={session} org={org} data={data} enquiries={enquiries} tasks={tasks} setPage={setPage} />;
       case "payments": return (
         <PaymentsPage
           data={data}
@@ -5111,6 +5681,12 @@ export default function App() {
           onArchive={handleArchive}
           setPage={setPage}
         />
+      );
+      case "calendar": return (
+        <CalendarPage data={data} enquiries={enquiries} tasks={tasks} />
+      );
+      case "tasks": return (
+        <TasksPage orgId={orgId} token={token} toast={toast} data={data} />
       );
       case "documents": return (
         <DocumentsPage
