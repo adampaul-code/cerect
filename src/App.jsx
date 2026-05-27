@@ -5095,6 +5095,7 @@ function DashboardPage({ session, org, data = [], enquiries = [], tasks = [], se
     return diff <= (t.reminder_days || 7);
   }) : [];
   const tasksOverdue = tasksDue.filter(t => new Date(t.due_date) < today);
+  const arrears = data.filter(u => u.status === "arrears");
   const leaving = data.filter(u => u.status === "leaving");
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
