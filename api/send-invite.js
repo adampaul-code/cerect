@@ -34,14 +34,3 @@ export default async function handler(req, res) {
             <p style="margin:0 0 4px;font-size:14px"><strong>Email:</strong> ${to}</p>
             <p style="margin:0;font-size:14px"><strong>Temporary password:</strong> <code style="background:#fff;padding:3px 8px;border-radius:4px;font-size:14px;letter-spacing:1px">${tempPassword}</code></p>
           </div>
-          <p style="font-size:14px;color:#5A6E8A">On first login you will be asked to set up two-factor authentication using Google Authenticator or Authy.</p>
-          <p style="font-size:13px;color:#9AAABB;margin-top:24px">If you did not expect this invitation, please ignore this email.</p>
-          <p style="font-weight:600;color:#0F3A52;margin-top:16px">The Cerect Team</p>
-        </div>
-      `,
-    }),
-  });
-
-  const data = await r.json();
-  return res.status(r.ok ? 200 : 400).json(data);
-}
