@@ -4313,7 +4313,7 @@ const ENQUIRY_STATUSES={
   archived:"📦 Archived",
 };
 
-function EnquiriesPage({token,data,orgId}){
+function EnquiriesPage({token,data,orgId,onDataRefresh}){
   const [enquiries,setEnquiries]=useState([]);
   const [loading,setLoading]=useState(true);
   const [statusFilter,setStatusFilter]=useState("all");
@@ -4363,6 +4363,7 @@ function EnquiriesPage({token,data,orgId}){
       setEnquiries(enq=>enq.map(e=>e.id===convertEnquiry.id?{...e,status:"converted"}:e));
       setConvertEnquiry(null);
       setConvertUnit("");
+      if (onDataRefresh) onDataRefresh();
       alert(`✅ ${convertEnquiry.name} has been added to unit ${convertUnit} as a new tenant. Go to the Site Plan or Tenants page to complete their details.`);
     }catch(e){alert("Conversion failed: "+e.message);}
   }
@@ -6068,7 +6069,7 @@ export default function App(){
                 }}/>}
                 {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId}/>}
                 {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
-                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId}/>}
+                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData}/>}
                 {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete}/>}
                 {page==="users"&&<UsersPage token={token} currentUserEmail={userEmail} orgId={orgId}/>}
               </>
