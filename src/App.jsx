@@ -4794,6 +4794,8 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setMsg(`✅ ${email} removed`);
     await reload();
   }
+
+  function getUsersForOrg(orgId) {
     const userIds = orgUsers.filter(ou => ou.org_id === orgId).map(ou => ou.user_id);
     return allUsers.filter(u => userIds.includes(u.id));
   }
@@ -4841,9 +4843,9 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     suspended: { bg: "#FFF0EE", color: "var(--danger)", border: "#FFCDD2" },
   };
 
-  if (loading) return <div className="page"><div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div></div>;
-
-  return (
+  return loading ? (
+    <div className="page"><div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div></div>
+  ) : (
     <div className="page">
       {msg && (
         <div style={{ background: "#EBF5F0", border: "1.5px solid #BDE5D3", borderRadius: 9, padding: "10px 16px", marginBottom: 16, fontSize: 13, color: "var(--success)", display: "flex", justifyContent: "space-between" }}>
