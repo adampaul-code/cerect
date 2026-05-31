@@ -2325,7 +2325,8 @@ function TasksPage({token,showToast,data=[],orgId}){
   }
 
   useEffect(()=>{
-    taskList(token)
+    if(!token || !orgId) return;
+    taskList(token, orgId)
       .then(t=>{setTasks(Array.isArray(t)?t:[]);setDbError(false);setLoading(false);})
       .catch(()=>{setDbError(true);setTasks([]);setLoading(false);});
   },[token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
