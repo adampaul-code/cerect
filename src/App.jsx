@@ -5314,6 +5314,7 @@ export default function App(){
   const [isNew,setIsNew]=useState(false);
   const [toast,setToast]=useState(null);
   const [offline,setOffline]=useState(false);
+  // eslint-disable-next-line no-unused-vars
   const { confirm: confirmDialog, Modal: ConfirmModal } = useConfirm();
 
   const token=session?.access_token;
