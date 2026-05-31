@@ -2259,6 +2259,7 @@ async function uploadTaskPhoto(taskId, file, token){
 
 const TASKS_SETUP_SQL = `create table tasks (
   id uuid primary key default gen_random_uuid(),
+  org_id uuid,
   title text not null,
   category text,
   priority text default 'Medium',
@@ -2271,8 +2272,8 @@ const TASKS_SETUP_SQL = `create table tasks (
   linked_unit text,
   created_at timestamptz default now()
 );
-alter table tasks enable row level security;
-create policy "Authenticated users only" on tasks for all to authenticated using (true) with check (true);`;
+alter table tasks disable row level security;
+grant select, insert, update, delete on table tasks to anon, authenticated;`;
 
 function TasksPage({token,showToast,data=[],orgId}){
   const [tasks,setTasks]=useState([]);
