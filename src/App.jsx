@@ -4790,6 +4790,8 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     } catch (e) { setMsg(`❌ Failed: ${e.message}`); }
     setCreatingTest(false);
   }
+
+  async function handleAddSuperAdmin() {
     if (!newSuperAdmin.trim()) return;
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/super_admins`, {
