@@ -2,6 +2,7 @@
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
@@ -71,7 +72,23 @@ async function mfaListFactors(token) {
   return d.factors || [];
 }
 
-// ─── Org helpers ──────────────────────────────────────────────────────────────
+async function resetPassword(email) {
+  await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+    method: "POST",
+    headers: BASE_H,
+    body: JSON.stringify({ email }),
+  });
+}
+
+function ShieldLogo({ size = 40 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M20 3L5 9v10c0 9.4 6.4 18.2 15 20.5C29.6 37.2 36 28.4 36 19V9L20 3z" fill="var(--navy)" />
+      <path d="M20 8L9 13v8c0 6.6 4.8 12.8 11 14.7C26.2 33.8 31 27.6 31 21v-8L20 8z" fill="var(--gold)" opacity="0.3" />
+      <path d="M16 20l3 3 6-6" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 function authH(token) {
   return { ...BASE_H, Authorization: `Bearer ${token}` };
 }
@@ -2523,7 +2540,7 @@ function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
         rec?.notes || "",
       ]);
     });
-    import("xlsx").then(XLSX => {
+    import("xlsx").then(({ default: XLSX }) => {
       const ws = XLSX.utils.aoa_to_sheet(rows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
