@@ -954,7 +954,7 @@ function LoginPage({onLogin}){
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[],orgId,showToast}){
+function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[],orgId,showToast,onAudit}){
   const [form,setForm]=useState({...item});
   const [saving,setSaving]=useState(false);
   const [newArea,setNewArea]=useState("");
@@ -4163,7 +4163,7 @@ function DocCount({archiveId, token}){
     {count>0?`📎 ${count} doc${count!==1?"s":""}`:""}</span>;
 }
 
-function ArchivePage({token,onRestore,onPermanentDelete,orgId,showToast}){
+function ArchivePage({token,onRestore,onPermanentDelete,orgId,showToast,onAudit}){
   const [archived,setArchived]=useState([]);
   const [deleted,setDeleted]=useState([]);
   const [tab,setTab]=useState("archived");
@@ -6214,7 +6214,7 @@ export default function App(){
                 {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
                 {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
                 {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData} showToast={showToast} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
-                {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} showToast={showToast}/>}
+                {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} showToast={showToast} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
                 {page==="users"&&<UsersPage token={token} currentUserEmail={displayEmail} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
               </>
             }
@@ -6251,7 +6251,7 @@ export default function App(){
               const fresh=await areasGet(token,orgId);setAreas(fresh||[]);
             }
           }}
-          onDelete={handleDelete} showToast={showToast}/>
+          onDelete={handleDelete} showToast={showToast} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>
       )}
       {toast&&<div className="toast">{toast}</div>}
       {ConfirmModal}
