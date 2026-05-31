@@ -5036,39 +5036,6 @@ function OnboardingPage({ session, onComplete }) {
   );
 }
 
-// ─── Dashboard Page ───────────────────────────────────────────────────────
-function DashboardPage({ session, org, data = [], enquiries = [], tasks = [], setPage }) {
-  const orgName = org?.name || "Your site";
-
-  const stor = data.filter(d => d.category === "Storage");
-  const res = data.filter(d => d.category === "Residential");
-  const com = data.filter(d => d.category === "Commercial");
-  const activeStatuses = ["occupied", "arrears", "new"];
-  const occ = stor.filter(u => activeStatuses.includes(u.status)).length;
-  const totalRent = data.filter(u => u.rent && activeStatuses.includes(u.status)).reduce((a, b) => a + (Number(b.rent) || 0), 0);
-  const occRate = stor.length > 0 ? Math.round(occ / stor.length * 100) : 0;
-
-  const tasksDue = tasks ? tasks.filter(t => {
-    if (t.status === "Done") return false;
-    if (!t.due_date) return false;
-    const tod = new Date(); tod.setHours(0, 0, 0, 0);
-    const d = new Date(t.due_date);
-    const diff = Math.ceil((d - tod) / 86400000);
-    return diff <= (t.reminder_days || 7);
-  }) : [];
-  const tasksOverdue = tasksDue.filter(t => new Date(t.due_date) < today);
-  const arrears = data.filter(u => u.status === "arrears");
-  const leaving = data.filter(u => u.status === "leaving");
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const in60 = new Date(today); in60.setDate(in60.getDate() + 60);
-
-  function parseReviewDate(str) {
-    if (!str) return null;
-    const s = str.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      const [y, m, d] = s.split("-").map(Number);
-
 // ─── App Shell ────────────────────────────────────────────────────────────────
 const NAV=[
   {section:"Overview"},{id:"dashboard",label:"Dashboard",icon:"📊"},
