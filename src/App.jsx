@@ -4831,6 +4831,24 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setMsg(`✅ Plan updated`);
   }
 
+  async function handleDeleteOrg(org) {
+    if (!window.confirm(`⚠️ PERMANENTLY DELETE "${org.name}"?\n\nThis will delete:\n• Their organisation record\n• All their org_users entries\n\nThis does NOT delete their tenant data or documents — those remain in the database.\n\nThis cannot be undone. Type the org name to confirm.`)) return;
+    const confirm2 = window.prompt(`Type "${org.name}" to confirm permanent deletion:`);
+    if (confirm2 !== org.name) { setMsg("❌ Deletion cancelled — name did not match"); return; }
+    try {
+      // Remove org_users first
+      await fetch(`${SUPABASE_URL}/rest/v1/org_users?org_id=eq.${org.id}`, {
+        method: "DELETE", headers: authH(token),
+      });
+      // Remove organisation
+      await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+        method: "DELETE", headers: authH(token),
+      });
+      setOrgs(os => os.filter(o => o.id !== org.id));
+      setMsg(`✅ "${org.name}" has been permanently deleted`);
+    } catch (e) { setMsg(`❌ Delete failed: ${e.message}`); }
+  }
+
   const PLAN_COLORS = {
     trial: { bg: "#FFF8E6", color: "#7A5C00", border: "#F5E0A0" },
     core: { bg: "#EBF5F0", color: "var(--success)", border: "#BDE5D3" },
@@ -4965,6 +4983,7 @@ function SuperAdminPage({ token, session, onImpersonate }) {
                     : <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); handleSuspend(org); }}>⏸ Suspend</button>
                   }
                   <button className="sp-btn sp-btn-navy" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); onImpersonate(org); }}>👁 View as</button>
+                  <button className="sp-btn" style={{ fontSize: 11, color: "var(--danger)", borderColor: "var(--danger)" }} onClick={e => { e.stopPropagation(); handleDeleteOrg(org); }}>🗑️ Delete</button>
                   <span style={{ fontSize: 12, color: "var(--sub)", marginLeft: 4 }}>{isSelected ? "▲" : "▼"}</span>
                 </div>
               </div>
