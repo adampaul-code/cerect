@@ -94,7 +94,7 @@ async function mfaEnroll(token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/factors`, {
     method: "POST",
     headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ friendly_name: "CamStorage", factor_type: "totp" })
+    body: JSON.stringify({ friendly_name: "Cerect", factor_type: "totp" })
   });
   return r.json();
 }
@@ -687,7 +687,7 @@ function QRImage({svgString}){
     <div>
       <img src={src} alt="MFA QR Code" style={{width:200,height:200,border:"2px solid #E4EAF2",borderRadius:8,imageRendering:"pixelated"}}/>
       <div style={{marginTop:8}}>
-        <a href={src} download="camstorage-mfa-qr.png" className="btn btn-outline btn-sm">⬇️ Download QR Code</a>
+        <a href={src} download="cerect-mfa-qr.png" className="btn btn-outline btn-sm">⬇️ Download QR Code</a>
       </div>
     </div>
   );
@@ -787,7 +787,7 @@ function LoginPage({onLogin}){
       <div className="login-box">
         <div className="login-logo" style={{flexDirection:"column",gap:8}}>
           <ShieldLogo size={52}/>
-          <div className="login-logotext" style={{color:"var(--navy)"}}>CamStorage</div>
+          <div className="login-logotext" style={{color:"var(--navy)"}}>cerect.</div>
         </div>
 
         {step==="login"&&(
@@ -1943,7 +1943,7 @@ function Payments({data, token, showToast, onStatusUpdate, orgId}){
     const ws = XLSX.utils.aoa_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
-    XLSX.writeFile(wb, `CamStorage_Payments_${viewMonth}.xlsx`);
+    XLSX.writeFile(wb, `Cerect_Payments_${viewMonth}.xlsx`);
   }
 
   const getRecord = (uid) => records.find(r => r.tenant_id === uid);
@@ -3181,7 +3181,7 @@ function DataTools({data,onImport,token,showToast}){
       const rows=data.map(d=>({"Unit ID":d.id,"Property/Label":d.label||"","Category":d.category,"Tenant":d.tenant||"","Address":d.address||"","Email":d.email||"","Phone":d.phone||"","Payment Method":d.payment||"","Rent Ex-VAT":d.rent||"","Rent Inc-VAT":d.vat_rent||"","Status":SL[d.status]||d.status,"Lock Deposit Paid":d.lock_deposit_paid||"","Lock Deposit Amount":d.lock_deposit_amount||"","Tenant Deposit":d.tenant_deposit||"","Key Number":d.key_number||"","Row/Location":d.row_name||"","Box Number":d.box_no||"","Size":d.size||"","Review Date":d.review||"","Move-in Date":d.move_in_date||"","Notes":d.notes||""}));
       const ws=XLSX.utils.json_to_sheet(rows);
       const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws,"CamStorage");
+      XLSX.utils.book_append_sheet(wb,ws,"Cerect");
 
       // Add Enquiries sheet
       const crmR=await fetch(`${SUPABASE_URL}/rest/v1/enquiries?order=enquiry_date.desc`,{headers:authH(token)});
@@ -3193,7 +3193,7 @@ function DataTools({data,onImport,token,showToast}){
       }
 
       const excelBlob=XLSX.write(wb,{bookType:"xlsx",type:"array"});
-      zip.file("CamStorage_Data.xlsx", excelBlob);
+      zip.file("Cerect_Data.xlsx", excelBlob);
 
       // Step 2 — get all document folders
       const listR=await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`,{
@@ -3248,7 +3248,7 @@ function DataTools({data,onImport,token,showToast}){
       const date=new Date().toISOString().slice(0,10);
       const a=document.createElement("a");
       a.href=URL.createObjectURL(zipBlob);
-      a.download=`CamStorage_Backup_${date}.zip`;
+      a.download=`Cerect_Backup_${date}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -3505,7 +3505,7 @@ function UsersPage({token,currentUserEmail,orgId}){
   }
 
   async function handleRemoveUser(userId,email){
-    if(!window.confirm(`Remove ${email} from CamStorage? They will no longer be able to log in.`)) return;
+    if(!window.confirm(`Remove ${email} from Cerect? They will no longer be able to log in.`)) return;
     try{
       await deleteUser(userId);
       setMsg(`✅ ${email} has been removed`);
@@ -3641,7 +3641,7 @@ function UsersPage({token,currentUserEmail,orgId}){
         <p className="tsub tsm" style={{marginBottom:12}}>Send an invitation email — the recipient clicks a link to set their own password and will be prompted to set up MFA on first login.</p>
         <div className="invite-row">
           <div style={{flex:1}}>
-            <input className="sin" style={{width:"100%"}} type="email" placeholder="colleague@camstorage.co.uk" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)}/>
+            <input className="sin" style={{width:"100%"}} type="email" placeholder="colleague@example.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)}/>
           </div>
           <button className="btn btn-primary" onClick={handleInvite} disabled={inviting}>{inviting?"Sending...":"Send Invite"}</button>
         </div>
@@ -5403,7 +5403,7 @@ export default function App(){
         if(row.id!==orig.id){
           await dbDelete(row.id,token);
         }
-        const fresh=await dbGet(token);
+        const fresh=await dbGet(token,orgId);
         setData(fresh);
         showToast("✅ Restored — "+(orig.tenant||orig.label||row.id));
         return;
@@ -5476,7 +5476,7 @@ export default function App(){
       showToast(`✅ Restored — ${tenantData?.tenant||tenantData?.label||unitId} · ${docsRestored} doc${docsRestored!==1?"s":""} restored`);
 
       await archiveDelete(archiveId,token);
-      const fresh=await dbGet(token);
+      const fresh=await dbGet(token,orgId);
       setData(fresh);
     }
     catch{showToast("❌ Restore failed");}
@@ -5500,23 +5500,24 @@ export default function App(){
   }
   async function handleImport(rows){
     if(!rows||rows.length===0){showToast("❌ No valid rows found in spreadsheet");return;}
+    if(!orgId){showToast("❌ No organisation found — please log out and log back in");return;}
     showToast(`⏳ Importing ${rows.length} records…`);
     try{
       for(const row of rows){
-        await dbUpsert({...row,deleted_at:null,deleted_data:null,archived:false},token);
+        await dbUpsert({...row,org_id:orgId,deleted_at:null,deleted_data:null,archived:false},token);
       }
-      const fresh=await dbGet(token);
-      setData(fresh);
+      const fresh=await dbGet(token,orgId);
+      setData(Array.isArray(fresh)?fresh:[]);
       // Rebuild areas table from imported data
-      const storageRows=[...new Set(fresh.filter(d=>d.category==="Storage"&&d.row_name).map(d=>d.row_name))];
+      const storageRows=[...new Set((Array.isArray(fresh)?fresh:[]).filter(d=>d.category==="Storage"&&d.row_name).map(d=>d.row_name))];
       for(let i=0;i<storageRows.length;i++){
         await areasUpsert(storageRows[i],"Storage",i,token,orgId);
       }
-      const freshAreas=await areasGet(token, orgId);
+      const freshAreas=await areasGet(token,orgId);
       setAreas(freshAreas||[]);
       showToast(`✅ Imported ${rows.length} records successfully`);
     }catch(e){
-      showToast("❌ Import failed — please try again");
+      showToast("❌ Import failed: "+e.message);
     }
   }
   async function handleAddUnit(unit){
