@@ -3184,7 +3184,7 @@ function DataTools({data,onImport,token,showToast}){
       XLSX.utils.book_append_sheet(wb,ws,"Cerect");
 
       // Add Enquiries sheet
-      const crmR=await fetch(`${SUPABASE_URL}/rest/v1/enquiries?order=enquiry_date.desc`,{headers:authH(token)});
+      const crmR=await fetch(`${SUPABASE_URL}/rest/v1/enquiries?org_id=eq.${orgId}&order=enquiry_date.desc`,{headers:authH(token)});
       const crmData=await crmR.json();
       if(Array.isArray(crmData)&&crmData.length>0){
         const crmRows=crmData.map(e=>({"Name":e.name||"","Email":e.email||"","Phone":e.phone||"","Category":e.category||"","Size Needed":e.size_needed||"","Status":e.status||"","Enquiry Date":e.enquiry_date||"","Notes":e.notes||""}));
@@ -4343,7 +4343,7 @@ function EnquiriesPage({token,data,orgId}){
     };
     // Save tenant update
     try{
-      await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}`,{
+      await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}&org_id=eq.${orgId}`,{
         method:"PATCH",
         headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Authorization:`Bearer ${token}`,Prefer:"return=representation"},
         body:JSON.stringify({tenant:tenantData.tenant,email:tenantData.email,phone:tenantData.phone,status:"new",move_in_date:tenantData.move_in_date,notes:tenantData.notes})
@@ -5322,7 +5322,7 @@ export default function App(){
     const isStorage=unit.category==="Storage";
     if(isStorage&&!unit.tenant){showToast("⚠️ No tenant to archive — unit is already vacant");return;}
     // Check if already archived
-    const existing=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?original_unit_id=eq.${encodeURIComponent(id)}&order=archived_at.desc`,{headers:authH(token)});
+    const existing=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?original_unit_id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}&order=archived_at.desc`,{headers:authH(token)});
     const existingData=await existing.json();
     if(Array.isArray(existingData)&&existingData.length>0){
       const date=new Date(existingData[0].archived_at).toLocaleDateString("en-GB");
@@ -5411,7 +5411,7 @@ export default function App(){
       }
 
       // Restoring from archived_tenants table
-      const r=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${archiveId}`,{headers:authH(token)});
+      const r=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${archiveId}&org_id=eq.${orgId}`,{headers:authH(token)});
       const rows=await r.json();
       if(!rows||!rows[0]){showToast("❌ Archive record not found");return;}
       const record=rows[0];
