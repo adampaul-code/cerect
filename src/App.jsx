@@ -2200,7 +2200,8 @@ async function taskSave(task,token){
     headers:{...authH(token),Prefer:"return=representation"},
     body:JSON.stringify(clean)
   });
-  return r.ok?r.json():null;
+  if(!r.ok){const b=await r.json();throw new Error(b?.message||b?.code||r.status);}
+  return r.json();
 }
 async function taskUpdate(id,data,token){
   const clean={...data};
