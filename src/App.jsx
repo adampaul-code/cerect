@@ -5785,7 +5785,7 @@ export default function App(){
         if(!rows||!rows[0]){showToast("❌ Record not found");return;}
         const row=rows[0];
         const orig=row.deleted_data?JSON.parse(row.deleted_data):row;
-        const restored={...orig,deleted_at:null,deleted_data:null,archived:false};
+        const restored={...orig,org_id:orgId,deleted_at:null,deleted_data:null,archived:false};
         await dbUpsert(restored,token);
         // If this was a storage snapshot (generated ID), clean up the snapshot row
         if(row.id!==orig.id){
@@ -5827,8 +5827,24 @@ export default function App(){
         )) return;
       }
 
-      const restored={...tenantData,id:unitId,archived:false,deleted_at:null,deleted_data:null};
-      await dbUpsert(restored,token);
+      const restored={
+        ...tenantData,
+        id: unitId,
+        org_id: orgId,
+        archived: false,
+        deleted_at: null,
+        deleted_data: null,
+        // Ensure key fields from original data are preserved
+        category: tenantData.category || "Residential",
+        label: tenantData.label || tenantData.tenant || unitId,
+      };
+      const upsertResult = await dbUpsert(restored, token);
+      // Verify the upsert worked before proceeding
+      const upsertOk = Array.isArray(upsertResult) ? upsertResult.length > 0 : !!upsertResult?.id;
+      if (!upsertOk) {
+        showToast("❌ Restore failed — could not save tenant data. Archive record preserved.");
+        return;
+      }
 
       // Move documents using server-side copy (no browser download needed)
       const safeUnitId=(unitId||"").replace(/[^a-zA-Z0-9._-]/g,"_");
@@ -5859,9 +5875,13 @@ export default function App(){
       auditLog(token,orgId,userEmail,"restore","tenant",unitId,tenantData?.tenant||tenantData?.label||unitId,{from:"archive",docs_restored:docsRestored});
       showToast(`✅ Restored — ${tenantData?.tenant||tenantData?.label||unitId} · ${docsRestored} doc${docsRestored!==1?"s":""} restored`);
 
-      await archiveDelete(archiveId,token);
+      // Full reload first, then clean up archive record
       const fresh=await dbGet(token,orgId);
-      setData(fresh);
+      setData(Array.isArray(fresh)?fresh:[]);
+      const freshAreas=await areasGet(token,orgId);
+      setAreas(freshAreas||[]);
+      // Only delete archive record after confirming tenant is back in database
+      await archiveDelete(archiveId,token);
     }
     catch{showToast("❌ Restore failed");}
   }
