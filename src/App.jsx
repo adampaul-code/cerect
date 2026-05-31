@@ -3093,7 +3093,7 @@ function CalendarPage({data, enquiries=[], tasks=[]}){
 }
 
 // ─── Import / Export ──────────────────────────────────────────────────────────
-function DataTools({data,onImport,token,showToast}){
+function DataTools({data,onImport,token,showToast,orgId}){
 
   // ── Export matching original spreadsheet format exactly ───────────────────
   function exportOriginal(){
@@ -5805,7 +5805,7 @@ export default function App(){
                   setData(d=>d.map(u=>u.id===unitId?{...u,status}:u));
                 }}/>}
                 {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId}/>}
-                {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast}/>}
+                {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
                 {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId}/>}
                 {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete}/>}
                 {page==="users"&&<UsersPage token={token} currentUserEmail={userEmail} orgId={orgId}/>}
