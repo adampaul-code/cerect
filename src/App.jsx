@@ -422,7 +422,9 @@ async function dbUpsert(row, token) {
     headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify(row)
   });
-  return r.json();
+  const json = await r.json();
+  if (!r.ok) throw new Error(json?.message || json?.code || r.status);
+  return json;
 }
 async function dbDelete(id, token, orgId) {
   await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`, {
@@ -5839,10 +5841,10 @@ export default function App(){
         label: tenantData.label || tenantData.tenant || unitId,
       };
       const upsertResult = await dbUpsert(restored, token);
-      // Verify the upsert worked before proceeding
-      const upsertOk = Array.isArray(upsertResult) ? upsertResult.length > 0 : !!upsertResult?.id;
-      if (!upsertOk) {
-        showToast("❌ Restore failed — could not save tenant data. Archive record preserved.");
+      // Check for explicit error response from Supabase
+      const upsertFailed = upsertResult?.code || upsertResult?.error || upsertResult?.message?.includes("error");
+      if (upsertFailed) {
+        showToast("❌ Restore failed — " + (upsertResult?.message || upsertResult?.code || "database error") + ". Archive record preserved.");
         return;
       }
 
@@ -5883,7 +5885,7 @@ export default function App(){
       // Only delete archive record after confirming tenant is back in database
       await archiveDelete(archiveId,token);
     }
-    catch{showToast("❌ Restore failed");}
+    catch(e){showToast("❌ Restore failed — "+(e?.message||"unknown error"));}
   }
 
   async function handlePermanentDelete(id, isDeleted=false){
