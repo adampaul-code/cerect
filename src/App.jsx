@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 
-// Cerect v2.0 — Multi-tenant Storage Management Platform
+// Cerect v2.1 — Multi-tenant Storage Management Platform
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
 const BASE_H = { "Content-Type": "application/json", apikey: SUPABASE_KEY };
@@ -153,6 +153,23 @@ function authH(token) {
 }
 
 // ─── Org helpers (multi-tenant) ───────────────────────────────────────────────
+async function auditLog(token, orgId, userEmail, action, entityType, entityId, entityLabel, details={}) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/audit_log`, {
+      method: "POST",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({
+        org_id: orgId,
+        user_email: userEmail,
+        action,
+        entity_type: entityType,
+        entity_id: String(entityId || ""),
+        entity_label: entityLabel || "",
+        details,
+      }),
+    });
+  } catch {} // Never let audit logging crash the app
+}
 async function getOrgForUser(userId, token) {
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/org_users?user_id=eq.${userId}&limit=1`,
@@ -4796,7 +4813,36 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setInviting(false);
   }
 
-  const [showCreateTest, setShowCreateTest] = useState(false);
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditOrg, setAuditOrg] = useState("all");
+
+  async function loadAuditLog() {
+    setAuditLoading(true);
+    const url = auditOrg === "all"
+      ? `${SUPABASE_URL}/rest/v1/audit_log?order=created_at.desc&limit=200`
+      : `${SUPABASE_URL}/rest/v1/audit_log?org_id=eq.${auditOrg}&order=created_at.desc&limit=200`;
+    const r = await fetch(url, { headers: authH(token) });
+    const rows = await r.json();
+    setAuditLogs(Array.isArray(rows) ? rows : []);
+    setAuditLoading(false);
+  }
+
+  useEffect(() => {
+    if (showAuditLog) loadAuditLog();
+  }, [showAuditLog, auditOrg]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ACTION_COLORS = {
+    create: { bg: "#EBF5F0", color: "var(--success)" },
+    update: { bg: "#EEF4FF", color: "#3B5FA0" },
+    archive: { bg: "#FFF8E6", color: "#7A5C00" },
+    restore: { bg: "#F3E5F5", color: "#7B1FA2" },
+    delete: { bg: "#FFF0EE", color: "var(--danger)" },
+    soft_delete: { bg: "#FFF0EE", color: "var(--danger)" },
+    import: { bg: "#EEF4FF", color: "#3B5FA0" },
+    login: { bg: "#F5F5F5", color: "#888" },
+  };
   const [testOrgName, setTestOrgName] = useState("Cerect Test Business");
   const [creatingTest, setCreatingTest] = useState(false);
 
@@ -4965,6 +5011,50 @@ function SuperAdminPage({ token, session, onImpersonate }) {
         <div className="kpi-card"><div className="kpi-label">Active</div><div className="kpi-value">{orgs.filter(o => o.plan !== "suspended").length}</div><div className="kpi-meta">Trial + paid</div></div>
         <div className="kpi-card"><div className="kpi-label">Paid</div><div className="kpi-value">{orgs.filter(o => ["core","professional","business"].includes(o.plan)).length}</div><div className="kpi-meta">Paying customers</div></div>
         <div className="kpi-card"><div className="kpi-label">Total Users</div><div className="kpi-value">{allUsers.length}</div><div className="kpi-meta">Across all orgs</div></div>
+      </div>
+
+      {/* Audit Log */}
+      <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: showAuditLog ? "1px solid var(--border)" : "none" }}>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14 }}>📋 Audit Log</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {showAuditLog && (
+              <select value={auditOrg} onChange={e => setAuditOrg(e.target.value)}
+                style={{ fontSize: 12, padding: "4px 8px", border: "1.5px solid var(--border)", borderRadius: 6, fontFamily: "var(--fb)" }}>
+                <option value="all">All organisations</option>
+                {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            )}
+            <button className="btn btn-outline btn-sm" onClick={() => setShowAuditLog(s => !s)}>{showAuditLog ? "Hide" : "View Log"}</button>
+          </div>
+        </div>
+        {showAuditLog && (
+          <div style={{ maxHeight: 400, overflowY: "auto" }}>
+            {auditLoading && <div style={{ padding: 20, textAlign: "center", color: "var(--sub)", fontSize: 13 }}>Loading…</div>}
+            {!auditLoading && auditLogs.length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--sub)", fontSize: 13 }}>No audit records yet</div>}
+            {!auditLoading && auditLogs.map(log => {
+              const orgName = orgs.find(o => o.id === log.org_id)?.name || log.org_id?.slice(0,8) || "—";
+              const actionStyle = ACTION_COLORS[log.action] || { bg: "#F5F5F5", color: "#888" };
+              return (
+                <div key={log.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid var(--border)" }}>
+                  <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 99, background: actionStyle.bg, color: actionStyle.color, fontWeight: 700, flexShrink: 0, textTransform: "uppercase" }}>{log.action}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>
+                      {log.entity_label || log.entity_id}
+                      <span style={{ color: "var(--sub)", fontWeight: 400 }}> · {log.entity_type}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--sub)" }}>
+                      {log.user_email} · {orgName}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--sub)", flexShrink: 0 }}>
+                    {new Date(log.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Create test org */}
@@ -5318,6 +5408,7 @@ export default function App(){
   const { confirm: confirmDialog, Modal: ConfirmModal } = useConfirm();
 
   const token=session?.access_token;
+  const userEmail=session?.user?.email||"";
   const orgId = impersonating ? impersonating.org.id : org?.id;
   const activeOrg = impersonating ? impersonating.org : org;
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),3200);};
@@ -5517,12 +5608,18 @@ export default function App(){
       };
       await dbUpsert(clean,token);
       setData(d=>d.map(r=>r.id===clean.id?clean:r));
+      auditLog(token,orgId,userEmail,"update","tenant",clean.id,clean.tenant||clean.label||clean.id,{status:clean.status,rent:clean.rent});
       showToast("✅ Saved");
     }
     catch{showToast("❌ Save failed");}
   }
   async function handleSaveNew(row){
-    try{await dbUpsert(row,token);setData(d=>[...d,row]);showToast("✅ Added");}
+    try{
+      await dbUpsert(row,token);
+      setData(d=>[...d,row]);
+      auditLog(token,orgId,userEmail,"create","tenant",row.id,row.tenant||row.label||row.id,{category:row.category,status:row.status});
+      showToast("✅ Added");
+    }
     catch{showToast("❌ Could not save — check Unit ID is unique");}
   }
   async function handleDelete(id){
@@ -5546,6 +5643,7 @@ export default function App(){
       try{
         await dbDelete(unit.id,token);
         setData(d=>d.filter(r=>r.id!==id));
+        auditLog(token,orgId,userEmail,"delete","tenant",unit.id,name,{category:unit.category});
         showToast(`🗑️ Unit ${unit.id} deleted`);
       }catch{showToast("❌ Delete failed");}
       return;
@@ -5563,7 +5661,6 @@ export default function App(){
 
     try{
       if(isStorage){
-        // Save tenant to archived_tenants then clear the unit
         await archiveSave(unit.id, unit, token, orgId);
         const cleared={...unit,tenant:null,email:null,phone:null,payment:null,
           rent:null,vat_rent:null,status:"available",notes:null,
@@ -5571,12 +5668,13 @@ export default function App(){
           deleted_at:null,deleted_data:null};
         await dbUpsert(cleared,token);
         setData(d=>d.map(r=>r.id===id?cleared:r));
+        auditLog(token,orgId,userEmail,"archive","tenant",unit.id,name,{category:unit.category,unit_id:unit.id});
         showToast(`🗑️ "${name}" saved to Archive — unit marked as Available`);
       } else {
-        // Residential/Commercial — soft delete to Recently Deleted
         const deleted={...unit,archived:false,deleted_at:new Date().toISOString(),deleted_data:JSON.stringify(unit)};
         await dbUpsert(deleted,token);
         setData(d=>d.filter(r=>r.id!==id));
+        auditLog(token,orgId,userEmail,"soft_delete","tenant",unit.id,name,{category:unit.category});
         showToast("🗑️ Moved to Recently Deleted");
       }
     }
@@ -5619,17 +5717,17 @@ export default function App(){
       const archiveId=archiveRecord?.id;
 
       if(isStorage){
-        // Clear the unit FIRST — this must always happen
         const cleared={...unit,tenant:null,email:null,phone:null,payment:null,
           rent:null,vat_rent:null,status:"available",notes:null,
           lock_deposit_paid:null,lock_deposit_amount:null,tenant_deposit:null,key_number:null,address:null};
         await dbUpsert(cleared,token);
         setData(d=>d.map(r=>r.id===id?cleared:r));
+        auditLog(token,orgId,userEmail,"archive","tenant",id,name,{category:unit.category,unit_id:id,archive_id:archiveId});
         showToast(`📦 "${name}" archived — unit marked as Available`);
       } else {
-        // For Residential/Commercial — remove from active view
         await dbDelete(id,token);
         setData(d=>d.filter(r=>r.id!==id));
+        auditLog(token,orgId,userEmail,"archive","tenant",id,name,{category:unit.category,archive_id:archiveId});
         showToast(`📦 "${name}" archived successfully`);
       }
 
@@ -5674,6 +5772,7 @@ export default function App(){
         }
         const fresh=await dbGet(token,orgId);
         setData(fresh);
+        auditLog(token,orgId,userEmail,"restore","tenant",orig.id,orig.tenant||orig.label||row.id,{from:"deleted"});
         showToast("✅ Restored — "+(orig.tenant||orig.label||row.id));
         return;
       }
@@ -5736,6 +5835,7 @@ export default function App(){
           }
         }catch(e){}
       }
+      auditLog(token,orgId,userEmail,"restore","tenant",unitId,tenantData?.tenant||tenantData?.label||unitId,{from:"archive",docs_restored:docsRestored});
       showToast(`✅ Restored — ${tenantData?.tenant||tenantData?.label||unitId} · ${docsRestored} doc${docsRestored!==1?"s":""} restored`);
 
       await archiveDelete(archiveId,token);
@@ -5844,6 +5944,7 @@ export default function App(){
       }
       const freshAreas=await areasGet(token,orgId);
       setAreas(freshAreas||[]);
+      auditLog(token,orgId,userEmail,"import","tenant","bulk","Excel import",{record_count:imported});
       showToast(`✅ Imported ${imported} records successfully`);
     }catch(e){
       showToast("❌ Import failed: "+e.message);
@@ -5947,8 +6048,8 @@ export default function App(){
     </>
   );
 
-  const userEmail=session?.user?.email||"Admin";
-  const initials=userEmail.slice(0,2).toUpperCase();
+  const displayEmail=userEmail||"Admin";
+  const initials=displayEmail.slice(0,2).toUpperCase();
 
   return(
     <>
@@ -5999,7 +6100,7 @@ export default function App(){
             <div className="urow">
               <div className="uav">{initials}</div>
               <div>
-                <div className="uname">{userEmail}</div>
+                <div className="uname">{displayEmail}</div>
                 <button className="signout-btn" onClick={handleSignOut}>Sign out</button>
               </div>
             </div>
@@ -6025,7 +6126,7 @@ export default function App(){
               <div style={{width:1,height:32,background:"#E4EAF2"}}/>
               <div style={{textAlign:"right"}}>
                 <div style={{fontSize:11,color:"var(--sub)"}}>Signed in as</div>
-                <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{userEmail}</div>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{displayEmail}</div>
               </div>
               <button className="btn btn-outline btn-sm" onClick={()=>setShowGlobalSearch(s=>!s)} title="Search everything (Ctrl+K)">🔍</button>
               <button className="btn btn-outline btn-sm" onClick={()=>setPage("users")} title="Users & Settings">⚙️</button>
@@ -6094,7 +6195,7 @@ export default function App(){
                 {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
                 {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData} showToast={showToast}/>}
                 {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} showToast={showToast}/>}
-                {page==="users"&&<UsersPage token={token} currentUserEmail={userEmail} orgId={orgId}/>}
+                {page==="users"&&<UsersPage token={token} currentUserEmail={displayEmail} orgId={orgId}/>}
               </>
             }
           </div>
