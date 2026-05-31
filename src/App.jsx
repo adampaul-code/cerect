@@ -5503,10 +5503,14 @@ export default function App(){
     if(!orgId){showToast("❌ Not logged in to an organisation");return;}
     showToast(`⏳ Importing ${rows.length} records…`);
     try{
-      // Add org_id to every row and clean empty strings to null
+      // Add org_id to every row, clean empty strings, and remove columns that don't exist in Cerect
+      const VALID_COLS = new Set(['id','org_id','label','tenant','email','phone','payment','rent','vat_rent','status','category','row_name','box_no','size','review','notes','address','lock_deposit_paid','lock_deposit_amount','tenant_deposit','key_number','archived','deleted_at','deleted_data','sort_order','move_in_date','move_out_date']);
       const cleanRows = rows.map(row => {
         const clean = {...row, org_id: orgId, deleted_at: null, deleted_data: null, archived: false};
-        Object.keys(clean).forEach(k => { if(clean[k]==="") clean[k]=null; });
+        Object.keys(clean).forEach(k => {
+          if(!VALID_COLS.has(k)) delete clean[k];
+          else if(clean[k]==="") clean[k]=null;
+        });
         return clean;
       });
 
