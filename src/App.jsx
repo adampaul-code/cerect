@@ -5500,24 +5500,49 @@ export default function App(){
   }
   async function handleImport(rows){
     if(!rows||rows.length===0){showToast("❌ No valid rows found in spreadsheet");return;}
-    if(!orgId){showToast("❌ No organisation found — please log out and log back in");return;}
+    if(!orgId){showToast("❌ Not logged in to an organisation");return;}
     showToast(`⏳ Importing ${rows.length} records…`);
     try{
-      for(const row of rows){
-        await dbUpsert({...row,org_id:orgId,deleted_at:null,deleted_data:null,archived:false},token);
+      // Add org_id to every row and clean empty strings to null
+      const cleanRows = rows.map(row => {
+        const clean = {...row, org_id: orgId, deleted_at: null, deleted_data: null, archived: false};
+        Object.keys(clean).forEach(k => { if(clean[k]==="") clean[k]=null; });
+        return clean;
+      });
+
+      // Insert in batches of 50 to avoid request size limits
+      const batchSize = 50;
+      let imported = 0;
+      for(let i=0; i<cleanRows.length; i+=batchSize){
+        const batch = cleanRows.slice(i, i+batchSize);
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
+          method: "POST",
+          headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify(batch)
+        });
+        if(!r.ok){
+          const err = await r.text();
+          throw new Error(`Batch ${Math.floor(i/batchSize)+1} failed (${r.status}): ${err}`);
+        }
+        imported += batch.length;
+        showToast(`⏳ Imported ${imported} of ${cleanRows.length}…`);
       }
-      const fresh=await dbGet(token,orgId);
-      setData(Array.isArray(fresh)?fresh:[]);
-      // Rebuild areas table from imported data
+
+      // Reload data
+      const fresh = await dbGet(token, orgId);
+      setData(Array.isArray(fresh) ? fresh : []);
+
+      // Rebuild areas
       const storageRows=[...new Set((Array.isArray(fresh)?fresh:[]).filter(d=>d.category==="Storage"&&d.row_name).map(d=>d.row_name))];
       for(let i=0;i<storageRows.length;i++){
         await areasUpsert(storageRows[i],"Storage",i,token,orgId);
       }
       const freshAreas=await areasGet(token,orgId);
       setAreas(freshAreas||[]);
-      showToast(`✅ Imported ${rows.length} records successfully`);
+      showToast(`✅ Imported ${imported} records successfully`);
     }catch(e){
       showToast("❌ Import failed: "+e.message);
+      console.error("Import error:", e);
     }
   }
   async function handleAddUnit(unit){
