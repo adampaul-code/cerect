@@ -4705,9 +4705,16 @@ function SuperAdminPage({ token, session, onImpersonate }) {
   const [loading, setLoading] = useState(true);
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [msg, setMsg] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
 
   useEffect(() => {
     if (!token) return;
+    reload();
+  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function reload() {
     Promise.all([
       fetch(`${SUPABASE_URL}/rest/v1/organisations?order=created_at.desc`, { headers: authH(token) }).then(r => r.json()),
       fetch(`${SUPABASE_URL}/rest/v1/org_users?order=invited_at.desc`, { headers: authH(token) }).then(r => r.json()),
@@ -4718,7 +4725,34 @@ function SuperAdminPage({ token, session, onImpersonate }) {
       setAllUsers(Array.isArray(u.users) ? u.users : []);
       setLoading(false);
     });
-  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
+
+  async function handleInviteCustomer() {
+    if (!inviteEmail.trim()) return;
+    setInviting(true); setMsg("");
+    const tempPass = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-4).toUpperCase() + "!1";
+    try {
+      const d = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "createUser", email: inviteEmail.trim(), password: tempPass }),
+      }).then(r => r.json());
+      if (d.error) throw new Error(d.error_description || d.msg || d.error);
+      // Send welcome email
+      await fetch("/api/send-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: inviteEmail.trim(), tempPassword: tempPass }),
+      });
+      setMsg(`✅ Invitation sent to ${inviteEmail.trim()} — they will be prompted to set up their business on first login`);
+      setInviteEmail("");
+      setShowInvite(false);
+      await reload();
+    } catch (e) {
+      setMsg(`❌ Could not invite — ${e.message}`);
+    }
+    setInviting(false);
+  }
 
   function getUsersForOrg(orgId) {
     const userIds = orgUsers.filter(ou => ou.org_id === orgId).map(ou => ou.user_id);
@@ -4777,6 +4811,35 @@ function SuperAdminPage({ token, session, onImpersonate }) {
           {msg} <button onClick={() => setMsg("")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--sub)" }}>✕</button>
         </div>
       )}
+
+      {/* Invite new customer */}
+      <div className="card" style={{ marginBottom: 20, background: "linear-gradient(135deg, #0F3A52 0%, #1A5276 100%)", color: "#fff", border: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 16, marginBottom: 4 }}>✉️ Invite a new customer</div>
+            <div style={{ fontSize: 13, opacity: 0.8 }}>Creates their account and sends a welcome email with login instructions. They'll set up their business on first login.</div>
+          </div>
+          <button onClick={() => setShowInvite(s => !s)} style={{ background: "var(--gold)", color: "var(--navy)", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>
+            {showInvite ? "✕ Cancel" : "+ Invite Customer"}
+          </button>
+        </div>
+        {showInvite && (
+          <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+            <input
+              type="email"
+              value={inviteEmail}
+              onChange={e => setInviteEmail(e.target.value)}
+              placeholder="customer@theirbusiness.com"
+              onKeyDown={e => e.key === "Enter" && handleInviteCustomer()}
+              autoFocus
+              style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 14, padding: "10px 14px", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 8, outline: "none", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+            />
+            <button onClick={handleInviteCustomer} disabled={inviting || !inviteEmail.trim()} style={{ background: "var(--gold)", color: "var(--navy)", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: inviting ? 0.6 : 1 }}>
+              {inviting ? "Sending…" : "Send Invite →"}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* KPIs */}
       <div className="kpi-grid" style={{ marginBottom: 20 }}>
