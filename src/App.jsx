@@ -920,6 +920,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
   const [saved,setSaved]=useState(false);
   const [newUnitId,setNewUnitId]=useState("");
   const [changingId,setChangingId]=useState(false);
+  const [unitIdMsg,setUnitIdMsg]=useState("");
   const [showChangeId,setShowChangeId]=useState(false);
   const [savedForm,setSavedForm]=useState({...item});
   function formsEqual(a,b){
@@ -945,7 +946,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
     // Check if new ID already exists
     const existing=existingIds&&existingIds.find(u=>u.id===newUnitId);
     if(existing){
-      alert(`❌ Unit "${newUnitId}" already exists${existing.tenant?` — occupied by ${existing.tenant}`:""}.\n\nPlease choose a different unit ID.`);
+      setUnitIdMsg(`❌ Unit "${newUnitId}" already exists${existing.tenant?` — occupied by ${existing.tenant}`:""}. Choose a different ID.`);
       return;
     }
     if(!window.confirm(`Change unit ID from "${form.id}" to "${newUnitId}"?\n\nThis will update all documents and records.`)) return;
@@ -957,7 +958,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
       setNewUnitId("");
       setSaved(true);
       setTimeout(()=>setSaved(false),2000);
-    }catch(e){alert("Failed to change unit ID: "+e.message);}
+    }catch(e){showToast("Failed to change unit ID: "+e.message);}
     setChangingId(false);
   }
 
@@ -977,8 +978,9 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
               <button className="btn btn-outline btn-sm" style={{fontSize:11}} onClick={()=>{setShowChangeId(true);setNewUnitId(form.id);}}>✏️ Change Unit ID</button>
             ):(
               <div className="fr" style={{gap:6}}>
-                <input value={newUnitId} onChange={e=>setNewUnitId(e.target.value)} placeholder="New unit ID" style={{fontFamily:"var(--fb)",fontSize:12,padding:"4px 8px",border:"1.5px solid var(--gold)",borderRadius:6,width:120}}/>
+                <input value={newUnitId} onChange={e=>{setNewUnitId(e.target.value);setUnitIdMsg("");}} placeholder="New unit ID" style={{fontFamily:"var(--fb)",fontSize:12,padding:"4px 8px",border:"1.5px solid var(--gold)",borderRadius:6,width:120}}/>
                 <button className="btn btn-primary btn-sm" onClick={handleChangeUnitId} disabled={changingId}>{changingId?"Updating…":"✓ Save"}</button>
+                {unitIdMsg&&<span style={{fontSize:11,color:"var(--danger)",marginLeft:4}}>{unitIdMsg}</span>}
                 <button className="btn btn-outline btn-sm" onClick={()=>setShowChangeId(false)}>✕</button>
               </div>
             )}
@@ -1436,9 +1438,9 @@ function SitePlan({data,areas=[],onEdit,onAdd,onDelete,onRenameRow,onDeleteRow,o
   const nu=k=>e=>setNewUnit(f=>({...f,[k]:e.target.value}));
 
   function submitNewUnit(){
-    if(!newUnit.id.trim()){alert("Please enter a Unit ID");return;}
+    if(!newUnit.id.trim()){showToast("Please enter a Unit ID");return;}
     const exists=stor.find(u=>u.id===newUnit.id.trim());
-    if(exists){alert(`❌ Unit "${newUnit.id.trim()}" already exists in ${exists.row_name||"this area"}. Please choose a different ID.`);return;}
+    if(exists){showToast(`❌ Unit "${newUnit.id.trim()}" already exists — choose a different ID`);return;}
     onAdd({...newUnit,id:newUnit.id.trim(),rent:newUnit.rent?Number(newUnit.rent):null,vat_rent:null,email:null,phone:null,label:null,section:null,review:null,notes:null});
     setNewUnit({id:"",category:"Storage",row_name:"",size:"XL(20ft)",box_no:"",status:"available",tenant:"",rent:""});
     setShowAddUnit(false);
@@ -1597,7 +1599,7 @@ function SitePlan({data,areas=[],onEdit,onAdd,onDelete,onRenameRow,onDeleteRow,o
               <button className="btn btn-danger btn-sm" onClick={()=>{
                 const isOccupied=selU.tenant||["occupied","new","arrears","leaving"].includes(selU.status);
                 if(isOccupied){
-                  alert(`⛔ Cannot delete Unit ${selU.id}\n\nThis unit has a tenant (${selU.tenant||selU.status}). Archive the tenant first before deleting the unit.`);
+                  showToast(`⛔ Unit ${selU.id} has a tenant — archive them first before deleting the unit`);
                   return;
                 }
                 if(window.confirm(`Permanently delete empty Unit ${selU.id} from the site plan?\n\nThis cannot be undone.`)){
@@ -3409,7 +3411,7 @@ function DataTools({data,onImport,token,showToast,orgId}){
       records=records.filter(r=>r.id);
 
       if(records.length===0){
-        alert("❌ No valid records found. The spreadsheet may be in an unsupported format or may be empty.");
+        showToast("❌ No valid records found — check the spreadsheet format");
         e.target.value="";
         return;
       }
@@ -3774,7 +3776,7 @@ function TenantDocuments({tenantId, token, orgId}){
     }
     await reload();
     setUploading(false);
-    if(failed>0) alert(`⚠️ ${failed} file${failed!==1?"s":""} failed to upload. Please check your connection and try again.`);
+    if(failed>0) showToast(`⚠️ ${failed} file${failed!==1?"s":""} failed to upload — check your connection`);
   }
 
   async function confirmUpload(){
@@ -3786,7 +3788,7 @@ function TenantDocuments({tenantId, token, orgId}){
       setPendingTag(null);
       await reload();
     }catch(e){
-      alert("Upload failed — "+e.message+"\n\nPlease try again.");
+      showToast("Upload failed — "+e.message);
       setPendingTag(null);
     }
     setUploading(false);
@@ -4341,14 +4343,14 @@ function EnquiriesPage({token,data,orgId,onDataRefresh}){
   }
 
   async function handleConvert(){
-    if(!convertUnit){alert("Please select a unit first.");return;}
+    if(!convertUnit){showToast("Please select a unit first");return;}
     // Find the unit record
     const unit=data.find(u=>u.id===convertUnit);
-    if(!unit){alert("Unit not found.");return;}
+    if(!unit){showToast("Unit not found");return;}
     // Hard block — only allow if unit is vacant or available
     const occupiedStatuses=["occupied","arrears","leaving","new"];
     if(occupiedStatuses.includes(unit.status)||unit.tenant){
-      alert(`❌ Unit ${convertUnit} is not vacant — it currently has a tenant (${unit.tenant||"unknown"}).\n\nPlease choose a vacant or available unit.`);
+      showToast(`❌ Unit ${convertUnit} is occupied by ${unit.tenant||"a tenant"} — choose a vacant unit`);
       return;
     }
     if(!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
@@ -4364,8 +4366,8 @@ function EnquiriesPage({token,data,orgId,onDataRefresh}){
       setConvertEnquiry(null);
       setConvertUnit("");
       if (onDataRefresh) onDataRefresh();
-      alert(`✅ ${convertEnquiry.name} has been added to unit ${convertUnit} as a new tenant. Go to the Site Plan or Tenants page to complete their details.`);
-    }catch(e){alert("Conversion failed: "+e.message);}
+      showToast(`✅ ${convertEnquiry.name} added to unit ${convertUnit} — complete their details on the Tenants page`);
+    }catch(e){showToast("Conversion failed: "+e.message);}
   }
 
   async function reload(){
@@ -5508,7 +5510,7 @@ export default function App(){
       const docs=await listDocuments(safeId,token);
       const hasDocs=Array.isArray(docs)&&docs.length>0;
       if(hasDocs){
-        alert(`⚠️ Unit ${unit.id} has ${docs.length} document${docs.length!==1?"s":""} associated with ${name}.\n\nPlease use "📦 Archive" instead of Delete — this will safely save the tenant's details AND documents together so you can retrieve them later.`);
+        showToast(`⚠️ Unit ${unit.id} has documents — use Archive instead of Delete to preserve them`);
         return;
       }
       if(!window.confirm(`Remove tenant "${name}" from Unit ${unit.id}?\n\nTip: Use "📦 Archive" instead to keep their details for your records.\n\nClick OK to remove and mark unit as Available.`)) return;
@@ -5526,7 +5528,7 @@ export default function App(){
       const docs=await listDocuments(safeUnitId,token);
       const hasDocs=Array.isArray(docs)&&docs.length>0;
       if(hasDocs){
-        alert(`⚠️ "${name}" has ${docs.length} document${docs.length!==1?"s":""} associated with it.\n\nPlease use "📦 Archive" instead of Delete — this will safely save the details AND documents so you can retrieve them later.`);
+        showToast(`⚠️ "${name}" has documents — use Archive instead of Delete to preserve them`);
         return;
       }
       if(!window.confirm(`Move "${name}" to Recently Deleted?\n\nThey can be restored from the Archive page within 30 days.`)) return;
@@ -5660,13 +5662,7 @@ export default function App(){
       const unit=data.find(u=>u.id===unitId);
       const unitOccupied=unit&&(unit.tenant||["occupied","new","arrears","leaving"].includes(unit.status));
       if(unitOccupied){
-        alert(
-          `⛔ Cannot Restore\n\n` +
-          `Unit ${unitId} is currently occupied by "${unit.tenant||"a tenant"}".\n\n` +
-          `Restoring would overwrite their record and cannot be undone.\n\n` +
-          `To restore ${tenantData?.tenant||"this tenant"}, first move or archive the current occupant, ` +
-          `or add them as a new tenant to a different vacant unit.`
-        );
+        showToast(`⛔ Cannot restore — Unit ${unitId} is occupied by "${unit.tenant||"a tenant"}". Archive the current occupant first.`);
         return;
       }
       // If unit exists but is vacant, confirm before proceeding
@@ -6084,7 +6080,7 @@ export default function App(){
             const unit=data.find(u=>u.id===oldId);if(!unit) return;
             const checkR=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(newId)}&org_id=eq.${orgId}`,{headers:authH(token)});
             const checkData=await checkR.json();
-            if(Array.isArray(checkData)&&checkData.length>0){alert(`❌ Unit "${newId}" already exists. Please choose a different ID.`);return;}
+            if(Array.isArray(checkData)&&checkData.length>0){showToast(`❌ Unit "${newId}" already exists`);return;}
             await dbUpsert({...unit,id:newId,org_id:orgId},token);
             await dbDelete(oldId,token,orgId);
             const safeOldId=oldId.replace(/[^a-zA-Z0-9._-]/g,"_");
