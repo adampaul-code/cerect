@@ -1356,7 +1356,7 @@ function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
 }
 
 // ─── Site Plan ────────────────────────────────────────────────────────────────
-function SitePlan({data,areas=[],onEdit,onAdd,onDelete,onRenameRow,onDeleteRow,onSaveAreaOrder,onAddArea,onSaveUnitOrder}){
+function SitePlan({data,areas=[],onEdit,onAdd,onDelete,onRenameRow,onDeleteRow,onSaveAreaOrder,onAddArea,onSaveUnitOrder,showToast}){
   const [sel,setSel]=useState(null);
   const [filt,setFilt]=useState("all");
   const detailRef=useRef(null);
@@ -6073,7 +6073,7 @@ export default function App(){
               :<>
                 {page==="superadmin"&&isSuperAdmin&&<SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate}/>}
                 {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
-                {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow}
+                {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow} showToast={showToast}
                   onSaveAreaOrder={async(names)=>{await areasUpdateOrder(names,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);}}
                   onAddArea={async(name)=>{await areasUpsert(name,"Storage",areas.length,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);showToast(`✅ Area "${name}" created`);}}
                   onSaveUnitOrder={async(updates)=>{
