@@ -1,4 +1,4 @@
-// Cerect v1.6 — Storage Management Platform
+// Cerect v1.7 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -147,7 +147,7 @@ const DC = { occupied: "d-occ", arrears: "d-arr", leaving: "d-lea", new: "d-new"
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 async function dbGet(orgId, token) {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&order=category,id&archived=neq.true&deleted_at=is.null`,
+    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&order=category,id&deleted_at=is.null`,
     { headers: authH(token) }
   );
   if (r.status === 401) throw new Error("SESSION_EXPIRED");
@@ -5621,7 +5621,7 @@ function Sidebar({ page, setPage, session, org, onSignOut, open, onClose }) {
               </div>
             );
           })}
-          {email === SUPER_ADMIN_EMAIL && (
+          {email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && (
             <>
               <div className="nav-section">Platform</div>
               <button
@@ -5896,20 +5896,27 @@ export default function App() {
   // ── Site Plan handlers ────────────────────────────────────────────────────
   async function handleSave(form) {
     try {
-      // Generate ID from label if missing (Residential/Commercial)
       let row = { ...form, org_id: orgId };
+      // Generate ID from label for Residential/Commercial if missing
       if (!row.id && row.label) {
-        row.id = row.label.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
+        row.id = row.label.trim().replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 40);
       }
       if (!row.id) {
-        toast("Please enter a property name or unit ID", "error");
+        toast("Please enter a property name or unit ID before saving", "error");
         return;
       }
-      await dbUpsert(row, token);
+      // Remove empty strings that would conflict with DB constraints
+      Object.keys(row).forEach(k => { if (row[k] === "") row[k] = null; });
+      row.id = String(row.id).trim();
+      const result = await dbUpsert(row, token);
+      if (!Array.isArray(result) && result?.code) {
+        toast(`Save failed: ${result.message || result.code}`, "error");
+        return;
+      }
       const fresh = await dbGet(orgId, token);
       setData(Array.isArray(fresh) ? fresh : []);
       toast("Saved", "success");
-    } catch { toast("Save failed", "error"); }
+    } catch (e) { toast("Save failed: " + e.message, "error"); }
   }
 
   async function handleDelete(id) {
