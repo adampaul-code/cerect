@@ -1119,7 +1119,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
         {!isNew&&token&&(
           <div style={{borderTop:"1px solid #E4EAF2",padding:"16px 22px"}}>
             <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📁 Documents</div>
-            <TenantDocuments tenantId={form.id} token={token} orgId={orgId} showToast={showToast}/>
+            <TenantDocuments tenantId={form.id} token={token} orgId={orgId} showToast={showToast} onAudit={onAudit}/>
           </div>
         )}
         <div className="mf">
@@ -1873,7 +1873,7 @@ async function paymentRecordHistory(tenantId, token, orgId) {
 }
 
 // ─── Payments Page ────────────────────────────────────────────────────────────
-function Payments({data, token, showToast, onStatusUpdate, orgId}){
+function Payments({data, token, showToast, onStatusUpdate, orgId, onAudit}){
   const now = new Date();
   const [viewMonth, setViewMonth] = useState(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`);
   const [records, setRecords] = useState([]);
@@ -1945,11 +1945,12 @@ function Payments({data, token, showToast, onStatusUpdate, orgId}){
       if (record && record.id) {
         setRecords(r => [...r, record]);
         setDbError(false);
-        // If arrears and user chose to clear, update status to occupied
         if(unit.status==="arrears" && clearArrears && onStatusUpdate){
           await onStatusUpdate(unit.id, "occupied");
+          if(onAudit) onAudit("payment","tenant",unit.id,unit.tenant||unit.id,{month:viewMonth,amount:unit.rent,arrears_cleared:true});
           showToast(`✅ ${unit.tenant||unit.id} marked as paid · arrears status cleared`);
         } else {
+          if(onAudit) onAudit("payment","tenant",unit.id,unit.tenant||unit.id,{month:viewMonth,amount:unit.rent});
           showToast(`✅ ${unit.tenant||unit.id} marked as paid`);
         }
       } else {
@@ -1968,6 +1969,7 @@ function Payments({data, token, showToast, onStatusUpdate, orgId}){
     if (!window.confirm(`Remove payment record for ${unit.tenant||unit.id} for ${monthLabel(viewMonth)}?`)) return;
     await paymentRecordDelete(rec.id, token);
     setRecords(r => r.filter(x => x.id !== rec.id));
+    if(onAudit) onAudit("payment_removed","tenant",unit.id,unit.tenant||unit.id,{month:viewMonth});
     showToast("↩️ Payment record removed");
   }
 
@@ -2330,7 +2332,7 @@ const TASKS_SETUP_SQL = `create table tasks (
 alter table tasks disable row level security;
 grant select, insert, update, delete on table tasks to anon, authenticated;`;
 
-function TasksPage({token,showToast,data=[],orgId}){
+function TasksPage({token,showToast,data=[],orgId,onAudit}){
   const [tasks,setTasks]=useState([]);
   const [loading,setLoading]=useState(true);
   const [showForm,setShowForm]=useState(false);
@@ -2398,12 +2400,16 @@ function TasksPage({token,showToast,data=[],orgId}){
       if(editTask){
         await taskUpdate(editTask.id,form,token);
         setTasks(ts=>ts.map(t=>t.id===editTask.id?{...t,...form}:t));
+        if(onAudit) onAudit("update","task",editTask.id,form.title,{priority:form.priority,status:form.status});
         showToast("✅ Task updated");
       } else {
         const saved=await taskSave({...form, org_id: orgId},token);
         const rec=Array.isArray(saved)?saved[0]:saved;
-        if(rec?.id){setTasks(ts=>[...ts,rec]);showToast("✅ Task added");}
-        else{showToast("❌ Could not save task — please try again");}
+        if(rec?.id){
+          setTasks(ts=>[...ts,rec]);
+          if(onAudit) onAudit("create","task",rec.id,form.title,{priority:form.priority,due_date:form.due_date});
+          showToast("✅ Task added");
+        } else {showToast("❌ Could not save task — please try again");}
       }
       setShowForm(false);
     }catch(e){showToast("❌ Save failed: "+e.message);}
@@ -2412,6 +2418,7 @@ function TasksPage({token,showToast,data=[],orgId}){
 
   async function handleMarkDone(task, silent=false){
     await taskUpdate(task.id,{status:"Done"},token);
+    if(onAudit) onAudit("complete","task",task.id,task.title,{recurrence:task.recurrence});
     let updated=[...tasks.map(t=>t.id===task.id?{...t,status:"Done"}:t)];
     if(task.recurrence&&task.recurrence!=="None"&&task.due_date){
       const nextDate=nextOccurrence(task.due_date,task.recurrence);
@@ -2437,8 +2444,10 @@ function TasksPage({token,showToast,data=[],orgId}){
 
   async function handleDelete(id){
     if(!window.confirm("Delete this task?")) return;
+    const task = tasks.find(t=>t.id===id);
     await taskDelete(id,token);
     setTasks(ts=>ts.filter(t=>t.id!==id));
+    if(onAudit) onAudit("delete","task",id,task?.title||id,{});
     showToast("🗑️ Task deleted");
   }
 
@@ -3503,7 +3512,7 @@ function DataTools({data,onImport,token,showToast,orgId}){
 
 
 // ─── Users & Security ─────────────────────────────────────────────────────────
-function UsersPage({token,currentUserEmail,orgId}){
+function UsersPage({token,currentUserEmail,orgId,onAudit}){
   const [users,setUsers]=useState([]);
   const [inviteEmail,setInviteEmail]=useState("");
   const [newEmail,setNewEmail]=useState("");
@@ -3538,6 +3547,7 @@ function UsersPage({token,currentUserEmail,orgId}){
       // Send invite email via serverless function
       const emailResult=await sendInviteEmail(inviteEmail, tempPass);
       if(emailResult.id){
+        if(onAudit) onAudit("invite_user","user",inviteEmail,inviteEmail,{method:"email"});
         setMsg(`✅ Invitation sent to ${inviteEmail} — they will receive an email with login details`);
       } else {
         setMsg(`✅ User created but email may not have sent — temporary password: ${tempPass}`);
@@ -3567,6 +3577,7 @@ function UsersPage({token,currentUserEmail,orgId}){
     if(!window.confirm(`Remove ${email} from Cerect? They will no longer be able to log in.`)) return;
     try{
       await deleteUser(userId);
+      if(onAudit) onAudit("remove_user","user",userId,email,{});
       setMsg(`✅ ${email} has been removed`);
       const fresh=await listUsers(); setUsers(fresh);
     }catch(e){ setMsg("❌ Could not remove user"); }
@@ -3751,7 +3762,7 @@ function UsersPage({token,currentUserEmail,orgId}){
 
 
 // ─── Tenant Documents ─────────────────────────────────────────────────────────
-function TenantDocuments({tenantId, token, orgId, showToast}){
+function TenantDocuments({tenantId, token, orgId, showToast, onAudit}){
   // Preserve folder prefixes like archive/ and enquiry/ — only sanitise each segment
   const safeId=(tenantId||"").split("/").map(seg=>seg.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,"_")).join("/");
   const [docs,setDocs]=useState([]);
@@ -3809,15 +3820,17 @@ function TenantDocuments({tenantId, token, orgId, showToast}){
     if(!files||!files.length) return;
     setUploading(true);
     const fileArr=Array.from(files);
-    let failed=0;
+    let failed=0; let uploaded=0;
     for(const file of fileArr){
       try{
         const path=await uploadDocument(file,safeId,token);
         await saveDocTag(path,safeId,"Other",file.name,token,orgId);
+        uploaded++;
       }catch(e){failed++;}
     }
     await reload();
     setUploading(false);
+    if(uploaded>0 && showToast && onAudit) onAudit("upload","document",tenantId,`${uploaded} file${uploaded!==1?"s":""}`,{tenant_id:tenantId,count:uploaded});
     if(failed>0) showToast(`⚠️ ${failed} file${failed!==1?"s":""} failed to upload — check your connection`);
   }
 
@@ -3827,6 +3840,7 @@ function TenantDocuments({tenantId, token, orgId, showToast}){
     try{
       const path=await uploadDocument(pendingTag.file,safeId,token);
       await saveDocTag(path,safeId,pendingTag.tag,pendingTag.file.name,token,orgId);
+      if(onAudit) onAudit("upload","document",tenantId,pendingTag.file.name,{tenant_id:tenantId,tag:pendingTag.tag});
       setPendingTag(null);
       await reload();
     }catch(e){
@@ -3841,6 +3855,7 @@ function TenantDocuments({tenantId, token, orgId, showToast}){
     if(!window.confirm(`Delete "${doc.name.replace(/^\d+_/,'')}"?`)) return;
     await deleteDocument(path,token);
     await deleteDocTag(path,token);
+    if(onAudit) onAudit("delete","document",tenantId,doc.name.replace(/^\d+_/,''),{tenant_id:tenantId});
     await reload();
   }
 
@@ -3950,7 +3965,7 @@ function TenantDocuments({tenantId, token, orgId, showToast}){
 }
 
 
-function DocumentsPage({data,token,showToast,orgId}){
+function DocumentsPage({data,token,showToast,orgId,onAudit}){
   const [folders,setFolders]=useState([]); // just folder names
   const [folderDocs,setFolderDocs]=useState({}); // loaded docs per folder
   const [allTags,setAllTags]=useState({});
@@ -4336,7 +4351,7 @@ function ArchivePage({token,onRestore,onPermanentDelete,orgId,showToast}){
               <button className="mc" onClick={()=>setViewDocs(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token} orgId={orgId} showToast={showToast}/>
+              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token} orgId={orgId} showToast={showToast} onAudit={onAudit}/>
             </div>
           </div>
         </div>
@@ -4357,7 +4372,7 @@ const ENQUIRY_STATUSES={
   archived:"📦 Archived",
 };
 
-function EnquiriesPage({token,data,orgId,onDataRefresh,showToast}){
+function EnquiriesPage({token,data,orgId,onDataRefresh,showToast,onAudit}){
   const [enquiries,setEnquiries]=useState([]);
   const [loading,setLoading]=useState(true);
   const [statusFilter,setStatusFilter]=useState("all");
@@ -4405,6 +4420,7 @@ function EnquiriesPage({token,data,orgId,onDataRefresh,showToast}){
       // Update enquiry status and close
       await enquiryUpdate(convertEnquiry.id,{status:"converted"},token);
       setEnquiries(enq=>enq.map(e=>e.id===convertEnquiry.id?{...e,status:"converted"}:e));
+      if(onAudit) onAudit("convert","enquiry",convertEnquiry.id,convertEnquiry.name,{unit_id:convertUnit,category:convertEnquiry.category});
       setConvertEnquiry(null);
       setConvertUnit("");
       if (onDataRefresh) onDataRefresh();
@@ -4639,7 +4655,7 @@ function EnquiriesPage({token,data,orgId,onDataRefresh,showToast}){
               <button className="mc" onClick={()=>setViewDocsEnquiry(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token} orgId={orgId} showToast={showToast}/>
+              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token} orgId={orgId} showToast={showToast} onAudit={onAudit}/>
             </div>
           </div>
         </div>
@@ -4733,7 +4749,7 @@ function EnquiriesPage({token,data,orgId,onDataRefresh,showToast}){
               {(editItem||form.id)&&(
                 <div style={{borderTop:"1px solid #E4EAF2",paddingTop:16,marginTop:4}}>
                   <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📧 Email Correspondence</div>
-                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token} orgId={orgId} showToast={showToast}/>
+                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token} orgId={orgId} showToast={showToast} onAudit={onAudit}/>
                 </div>
               )}
             </div>
@@ -5438,6 +5454,7 @@ export default function App(){
     try{localStorage.setItem("cerect_session",JSON.stringify(sess));}catch{}
     if(sess?.access_token && sess?.user?.email){
       loginLogRecord(sess.user.email, sess.access_token).catch(()=>{});
+      // We don't have orgId yet at login time — log after org loads
     }
   }
 
@@ -5460,6 +5477,8 @@ export default function App(){
       if (row?.org_id) {
         const o = await getOrgDetails(row.org_id, session.access_token);
         setOrg(o);
+        // Log the login
+        auditLog(session.access_token, row.org_id, session.user.email, "login", "user", session.user.id, session.user.email, {});
         // If org is archived or suspended, block access
         if (o?.plan === "archived" || o?.plan === "suspended") {
           setNeedsOnboarding(false);
@@ -6185,18 +6204,18 @@ export default function App(){
                     showToast("✅ Order saved");
                   }}/>}
                 {page==="tenants"&&<Tenants data={data} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAdd} onArchive={handleArchive}/>}
-                {page==="tasks"&&<TasksPage token={token} showToast={showToast} data={data} orgId={orgId}/>}
+                {page==="tasks"&&<TasksPage token={token} showToast={showToast} data={data} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
                 {page==="calendar"&&<CalendarPage data={data} enquiries={enquiries} tasks={tasks}/>}
-                {page==="payments"&&<Payments data={data} token={token} showToast={showToast} orgId={orgId} onStatusUpdate={async(unitId,status)=>{
+                {page==="payments"&&<Payments data={data} token={token} showToast={showToast} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)} onStatusUpdate={async(unitId,status)=>{
                   const unit=data.find(u=>u.id===unitId);if(!unit) return;
                   await dbUpsert({...unit,status,org_id:orgId},token);
                   setData(d=>d.map(u=>u.id===unitId?{...u,status}:u));
                 }}/>}
-                {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId}/>}
+                {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
                 {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
-                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData} showToast={showToast}/>}
+                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData} showToast={showToast} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
                 {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} showToast={showToast}/>}
-                {page==="users"&&<UsersPage token={token} currentUserEmail={displayEmail} orgId={orgId}/>}
+                {page==="users"&&<UsersPage token={token} currentUserEmail={displayEmail} orgId={orgId} onAudit={(a,et,ei,el,d)=>auditLog(token,orgId,userEmail,a,et,ei,el,d)}/>}
               </>
             }
           </div>
