@@ -6,6 +6,16 @@ const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
 const BASE_H = { "Content-Type": "application/json", apikey: SUPABASE_KEY };
 const SUPER_ADMIN_EMAIL = (process.env.REACT_APP_SUPER_ADMIN_EMAIL || "").toLowerCase();
+
+async function checkSuperAdmin(email, token) {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/super_admins?email=eq.${encodeURIComponent(email.toLowerCase())}&limit=1`,
+    { headers: authH(token) }
+  );
+  if (!r.ok) return false;
+  const rows = await r.json();
+  return Array.isArray(rows) && rows.length > 0;
+}
 const AUTH_H = (token) => ({ "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` });
 
 async function adminCall(action, params={}) {
@@ -4705,12 +4715,15 @@ function SuperAdminPage({ token, session, onImpersonate }) {
   const [orgs, setOrgs] = useState([]);
   const [orgUsers, setOrgUsers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
+  const [superAdmins, setSuperAdmins] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [msg, setMsg] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [newSuperAdmin, setNewSuperAdmin] = useState("");
+  const [showSuperAdmins, setShowSuperAdmins] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -4722,10 +4735,12 @@ function SuperAdminPage({ token, session, onImpersonate }) {
       fetch(`${SUPABASE_URL}/rest/v1/organisations?order=created_at.desc`, { headers: authH(token) }).then(r => r.json()),
       fetch(`${SUPABASE_URL}/rest/v1/org_users?order=invited_at.desc`, { headers: authH(token) }).then(r => r.json()),
       fetch("/api/admin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "listUsers" }) }).then(r => r.json()),
-    ]).then(([o, ou, u]) => {
+      fetch(`${SUPABASE_URL}/rest/v1/super_admins?order=created_at.asc`, { headers: authH(token) }).then(r => r.ok ? r.json() : []),
+    ]).then(([o, ou, u, sa]) => {
       setOrgs(Array.isArray(o) ? o : []);
       setOrgUsers(Array.isArray(ou) ? ou : []);
       setAllUsers(Array.isArray(u.users) ? u.users : []);
+      setSuperAdmins(Array.isArray(sa) ? sa : []);
       setLoading(false);
     });
   }
@@ -4757,7 +4772,28 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setInviting(false);
   }
 
-  function getUsersForOrg(orgId) {
+  async function handleAddSuperAdmin() {
+    if (!newSuperAdmin.trim()) return;
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/super_admins`, {
+        method: "POST",
+        headers: { ...authH(token), Prefer: "return=minimal" },
+        body: JSON.stringify({ email: newSuperAdmin.trim().toLowerCase() }),
+      });
+      setMsg(`✅ ${newSuperAdmin.trim()} added as super admin`);
+      setNewSuperAdmin("");
+      await reload();
+    } catch (e) { setMsg(`❌ Failed: ${e.message}`); }
+  }
+
+  async function handleRemoveSuperAdmin(id, email) {
+    if (!window.confirm(`Remove ${email} as super admin?`)) return;
+    await fetch(`${SUPABASE_URL}/rest/v1/super_admins?id=eq.${id}`, {
+      method: "DELETE", headers: authH(token),
+    });
+    setMsg(`✅ ${email} removed`);
+    await reload();
+  }
     const userIds = orgUsers.filter(ou => ou.org_id === orgId).map(ou => ou.user_id);
     return allUsers.filter(u => userIds.includes(u.id));
   }
@@ -4850,6 +4886,37 @@ function SuperAdminPage({ token, session, onImpersonate }) {
         <div className="kpi-card"><div className="kpi-label">Active</div><div className="kpi-value">{orgs.filter(o => o.plan !== "suspended").length}</div><div className="kpi-meta">Trial + paid</div></div>
         <div className="kpi-card"><div className="kpi-label">Paid</div><div className="kpi-value">{orgs.filter(o => ["core","professional","business"].includes(o.plan)).length}</div><div className="kpi-meta">Paying customers</div></div>
         <div className="kpi-card"><div className="kpi-label">Total Users</div><div className="kpi-value">{allUsers.length}</div><div className="kpi-meta">Across all orgs</div></div>
+      </div>
+
+      {/* Super admin management */}
+      <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: showSuperAdmins ? "1px solid var(--border)" : "none" }}>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14 }}>🔑 Super Admins ({superAdmins.length})</div>
+          <button className="btn btn-outline btn-sm" onClick={() => setShowSuperAdmins(s => !s)}>{showSuperAdmins ? "Hide" : "Manage"}</button>
+        </div>
+        {showSuperAdmins && (
+          <div style={{ padding: "14px 18px" }}>
+            {superAdmins.map(sa => (
+              <div key={sa.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 13, fontWeight: 500 }}>{sa.email}</span>
+                {superAdmins.length > 1 && (
+                  <button className="btn btn-outline btn-sm" style={{ color: "var(--danger)", fontSize: 11 }} onClick={() => handleRemoveSuperAdmin(sa.id, sa.email)}>Remove</button>
+                )}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <input
+                type="email"
+                value={newSuperAdmin}
+                onChange={e => setNewSuperAdmin(e.target.value)}
+                placeholder="Add super admin email…"
+                onKeyDown={e => e.key === "Enter" && handleAddSuperAdmin()}
+                style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 13, padding: "7px 12px", border: "1.5px solid var(--border)", borderRadius: 7, outline: "none" }}
+              />
+              <button className="btn btn-navy btn-sm" onClick={handleAddSuperAdmin} disabled={!newSuperAdmin.trim()}>Add</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Org list */}
@@ -5124,6 +5191,7 @@ export default function App(){
   const [orgLoading, setOrgLoading] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [impersonating, setImpersonating] = useState(null);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [page,setPage]=useState("dashboard");
   const [mobileNav,setMobileNav]=useState(false);
   useEffect(()=>{ window.__camSetPage=setPage; return()=>{ delete window.__camSetPage; }; },[setPage]);
@@ -5180,6 +5248,12 @@ export default function App(){
   useEffect(() => {
     if (!session?.user?.id) return;
     setOrgLoading(true);
+    // Check super admin status from DB
+    if (session?.user?.email && session?.access_token) {
+      checkSuperAdmin(session.user.email, session.access_token)
+        .then(result => setIsSuperAdmin(result))
+        .catch(() => setIsSuperAdmin(false));
+    }
     getOrgForUser(session.user.id, session.access_token).then(async row => {
       if (row?.org_id) {
         const o = await getOrgDetails(row.org_id, session.access_token);
@@ -5229,6 +5303,7 @@ export default function App(){
     setOrg(null);
     setNeedsOnboarding(false);
     setImpersonating(null);
+    setIsSuperAdmin(false);
     setData([]); setAreas([]); setEnquiries([]); setTasks([]);
     try{localStorage.removeItem("cerect_session");}catch{}
   }
@@ -5729,7 +5804,6 @@ export default function App(){
 
   const userEmail=session?.user?.email||"Admin";
   const initials=userEmail.slice(0,2).toUpperCase();
-  const isSuperAdmin = SUPER_ADMIN_EMAIL && userEmail.trim().toLowerCase() === SUPER_ADMIN_EMAIL;
 
   return(
     <>
