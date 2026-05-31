@@ -6154,6 +6154,11 @@ export default function App() {
           </button>
         </div>
       )}
+      {offline && (
+        <div style={{ position: "fixed", top: impersonating ? 40 : 0, left: 0, right: 0, zIndex: 9998, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
+          ⚠️ No internet connection — changes may not save
+        </div>
+      )}
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
           ⚠️ No internet connection — changes may not save
         </div>
