@@ -1,4 +1,4 @@
-// Cerect v1.7 — Storage Management Platform
+// Cerect v1.8 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -5045,7 +5045,7 @@ function DataToolsPage({ data, orgId, token, toast }) {
 }
 
 // ─── Super Admin Page ─────────────────────────────────────────────────────────
-function SuperAdminPage({ token, session }) {
+function SuperAdminPage({ token, session, onImpersonate }) {
   const [orgs, setOrgs] = useState([]);
   const [orgUsers, setOrgUsers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -5180,6 +5180,7 @@ function SuperAdminPage({ token, session }) {
                     ? <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={e => { e.stopPropagation(); handleReactivate(org); }}>↩ Reactivate</button>
                     : <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); handleSuspend(org); }}>⏸ Suspend</button>
                   }
+                  <button className="sp-btn sp-btn-navy" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); onImpersonate(org); }}>👁 View as</button>
                   <span style={{ fontSize: 12, color: "var(--sub)", marginLeft: 4 }}>{isSelected ? "▲" : "▼"}</span>
                 </div>
               </div>
@@ -5667,8 +5668,11 @@ export default function App() {
   const { toasts, toast } = useToast();
   const refreshRef = useRef(null);
 
+  const [impersonating, setImpersonating] = useState(null); // { org, prevOrg, prevData, prevAreas, prevEnquiries, prevTasks }
+
   const token = session?.access_token;
-  const orgId = org?.id;
+  const orgId = impersonating ? impersonating.org.id : org?.id;
+  const activeOrg = impersonating ? impersonating.org : org;
 
   const [offline, setOffline] = useState(!navigator.onLine);
   const [offlineToast, setOfflineToast] = useState(false);
@@ -5800,6 +5804,39 @@ export default function App() {
     setSession(s);
     localStorage.setItem("cerect_session", JSON.stringify(s));
     toast("Signed in successfully", "success");
+  }
+
+  async function handleImpersonate(targetOrg) {
+    // Save current state
+    setImpersonating({ org: targetOrg, prevOrg: org, prevData: data, prevAreas: areas, prevEnquiries: enquiries, prevTasks: tasks });
+    // Load target org's data
+    setDataLoading(true);
+    try {
+      const [rows, areaRows, enqRows, taskRows] = await Promise.all([
+        dbGet(targetOrg.id, token),
+        areasGet(targetOrg.id, token),
+        enquiryList(targetOrg.id, token),
+        taskList(targetOrg.id, token).catch(() => []),
+      ]);
+      setData(Array.isArray(rows) ? rows : []);
+      setAreas(Array.isArray(areaRows) ? areaRows : []);
+      setEnquiries(Array.isArray(enqRows) ? enqRows : []);
+      setTasks(Array.isArray(taskRows) ? taskRows : []);
+    } catch {}
+    setDataLoading(false);
+    setPage("dashboard");
+    toast(`Viewing as ${targetOrg.name}`, "success");
+  }
+
+  function handleStopImpersonating() {
+    if (!impersonating) return;
+    setData(impersonating.prevData);
+    setAreas(impersonating.prevAreas);
+    setEnquiries(impersonating.prevEnquiries);
+    setTasks(impersonating.prevTasks);
+    setImpersonating(null);
+    setPage("superadmin");
+    toast("Back to your account", "success");
   }
 
   async function handleSignOut() {
@@ -6003,7 +6040,7 @@ export default function App() {
 
   function renderPage() {
     switch (page) {
-      case "dashboard": return <DashboardPage session={session} org={org} data={data} enquiries={enquiries} tasks={tasks} setPage={setPage} />;
+      case "dashboard": return <DashboardPage session={session} org={activeOrg} data={data} enquiries={enquiries} tasks={tasks} setPage={setPage} />;
       case "payments": return (
         <PaymentsPage
           data={data}
@@ -6040,7 +6077,7 @@ export default function App() {
         />
       );
       case "superadmin": return (
-        <SuperAdminPage token={token} session={session} />
+        <SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate} />
       );
       case "users": return (
         <UsersPage
@@ -6109,7 +6146,14 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
-      {offline && (
+      {impersonating && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "#7B3FA0", color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 20px", fontSize: 13, fontWeight: 500 }}>
+          <span>👁 Viewing as <strong>{impersonating.org.name}</strong> — you are in admin impersonation mode</span>
+          <button onClick={handleStopImpersonating} style={{ background: "#fff", color: "#7B3FA0", border: "none", borderRadius: 6, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+            ✕ Exit — back to my account
+          </button>
+        </div>
+      )}
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
           ⚠️ No internet connection — changes may not save
         </div>
@@ -6162,12 +6206,12 @@ export default function App() {
           </div>
         </div>
       )}
-      <div className="app">
+      <div className="app" style={impersonating ? { marginTop: 40 } : {}}>
         <Sidebar
           page={page}
           setPage={setPage}
           session={session}
-          org={org}
+          org={activeOrg}
           onSignOut={handleSignOut}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
