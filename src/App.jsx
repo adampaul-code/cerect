@@ -5277,7 +5277,15 @@ export default function App(){
         setOrg(o);
         setNeedsOnboarding(false);
       } else {
-        setNeedsOnboarding(true);
+        // Super admins don't need an org — send them to super admin panel
+        checkSuperAdmin(session.user.email, session.access_token).then(isSA => {
+          if (isSA) {
+            setNeedsOnboarding(false);
+            setPage("superadmin");
+          } else {
+            setNeedsOnboarding(true);
+          }
+        }).catch(() => setNeedsOnboarding(true));
       }
       setOrgLoading(false);
     }).catch(() => setOrgLoading(false));
