@@ -900,7 +900,7 @@ function LoginPage({onLogin}){
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[]}){
+function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[],orgId}){
   const [form,setForm]=useState({...item});
   const [saving,setSaving]=useState(false);
   const [newArea,setNewArea]=useState("");
@@ -1063,7 +1063,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
         {!isNew&&token&&(
           <div style={{borderTop:"1px solid #E4EAF2",padding:"16px 22px"}}>
             <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📁 Documents</div>
-            <TenantDocuments tenantId={form.id} token={token}/>
+            <TenantDocuments tenantId={form.id} token={token} orgId={orgId}/>
           </div>
         )}
         <div className="mf">
@@ -3691,7 +3691,7 @@ function UsersPage({token,currentUserEmail,orgId}){
 
 
 // ─── Tenant Documents ─────────────────────────────────────────────────────────
-function TenantDocuments({tenantId, token}){
+function TenantDocuments({tenantId, token, orgId}){
   // Preserve folder prefixes like archive/ and enquiry/ — only sanitise each segment
   const safeId=(tenantId||"").split("/").map(seg=>seg.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,"_")).join("/");
   const [docs,setDocs]=useState([]);
@@ -4275,7 +4275,7 @@ function ArchivePage({token,onRestore,onPermanentDelete,orgId}){
               <button className="mc" onClick={()=>setViewDocs(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token}/>
+              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token} orgId={orgId}/>
             </div>
           </div>
         </div>
@@ -4582,7 +4582,7 @@ function EnquiriesPage({token,data,orgId}){
               <button className="mc" onClick={()=>setViewDocsEnquiry(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token}/>
+              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token} orgId={orgId}/>
             </div>
           </div>
         </div>
@@ -4676,7 +4676,7 @@ function EnquiriesPage({token,data,orgId}){
               {(editItem||form.id)&&(
                 <div style={{borderTop:"1px solid #E4EAF2",paddingTop:16,marginTop:4}}>
                   <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📧 Email Correspondence</div>
-                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token}/>
+                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token} orgId={orgId}/>
                 </div>
               )}
             </div>
@@ -5746,7 +5746,7 @@ export default function App(){
       </div>
       {editItem&&(
         <EditModal item={editItem} isNew={isNew} onClose={()=>setEditItem(null)}
-          onArchive={handleArchive} areas={areas.map(a=>a.name)} token={token} existingIds={data}
+          onArchive={handleArchive} areas={areas.map(a=>a.name)} token={token} existingIds={data} orgId={orgId}
           onChangeUnitId={async(oldId,newId)=>{
             const unit=data.find(u=>u.id===oldId);if(!unit) return;
             const checkR=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(newId)}&org_id=eq.${orgId}`,{headers:authH(token)});
