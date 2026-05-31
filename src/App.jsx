@@ -5591,7 +5591,7 @@ const NAV = [
   { id: "settings",  label: "Settings",   icon: "settings",  section: null },
 ];
 
-function Sidebar({ page, setPage, session, org, onSignOut, open, onClose }) {
+function Sidebar({ page, setPage, session, org, onSignOut, open, onClose, impersonating, onStopImpersonating }) {
   const email = session?.user?.email || "";
   const initials = email ? email.slice(0, 2).toUpperCase() : "??";
   let lastSection = null;
@@ -5637,6 +5637,11 @@ function Sidebar({ page, setPage, session, org, onSignOut, open, onClose }) {
         </nav>
 
         <div className="sidebar-bottom">
+          {impersonating && (
+            <button onClick={onStopImpersonating} style={{ width: "100%", background: "#7B3FA0", color: "#fff", border: "none", borderRadius: 8, padding: "10px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer", marginBottom: 8, textAlign: "left" }}>
+              ✕ Exit — back to my account
+            </button>
+          )}
           <div className="user-chip">
             <div className="user-avatar">{initials}</div>
             <div className="user-email">{email}</div>
@@ -5674,7 +5679,7 @@ export default function App() {
   const orgId = impersonating ? impersonating.org.id : org?.id;
   const activeOrg = impersonating ? impersonating.org : org;
 
-  const [offline, setOffline] = useState(!navigator.onLine);
+  const [offline, setOffline] = useState(false);
   const [offlineToast, setOfflineToast] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
@@ -5692,15 +5697,24 @@ export default function App() {
 
   // Offline detection
   useEffect(() => {
+    let offlineTimer = null;
     const onOnline = () => {
+      clearTimeout(offlineTimer);
       setOffline(false);
       setOfflineToast(true);
       setTimeout(() => setOfflineToast(false), 3000);
     };
-    const onOffline = () => setOffline(true);
+    const onOffline = () => {
+      // Debounce — only show after 3 seconds of being offline to avoid false positives
+      offlineTimer = setTimeout(() => setOffline(true), 3000);
+    };
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-    return () => { window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); };
+    return () => {
+      clearTimeout(offlineTimer);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   // Escape key closes modal, Ctrl+K opens global search
@@ -6220,6 +6234,8 @@ export default function App() {
           onSignOut={handleSignOut}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
+          impersonating={impersonating}
+          onStopImpersonating={handleStopImpersonating}
         />
         <div className="main">
           <div className="topbar">
