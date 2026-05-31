@@ -1,4 +1,4 @@
-// Cerect v1.4 — Storage Management Platform
+// Cerect v1.5 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -1602,7 +1602,7 @@ function Legend() {
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [], token }) {
+function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [], token, onSwitchToEdit }) {
   const [form, setForm] = useState({ ...item });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1631,10 +1631,23 @@ function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = 
 
   async function save() {
     setSaving(true);
-    await onSave(form);
-    setSavedForm({ ...form });
+    // Auto-generate ID from label for Residential/Commercial if missing
+    let saveForm = { ...form };
+    if (!saveForm.id && saveForm.label) {
+      saveForm.id = saveForm.label.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
+      setForm(f => ({ ...f, id: saveForm.id }));
+    }
+    if (!saveForm.id) {
+      setSaving(false);
+      alert("Please enter a property name before saving.");
+      return;
+    }
+    await onSave(saveForm);
+    setSavedForm({ ...saveForm });
     setSaving(false);
     setSaved(true);
+    // If this was a new record, switch to edit mode so documents section appears
+    if (isNew && onSwitchToEdit) onSwitchToEdit(saveForm);
     setTimeout(() => setSaved(false), 2000);
   }
 
@@ -5679,7 +5692,15 @@ export default function App() {
   // ── Site Plan handlers ────────────────────────────────────────────────────
   async function handleSave(form) {
     try {
-      const row = { ...form, org_id: orgId };
+      // Generate ID from label if missing (Residential/Commercial)
+      let row = { ...form, org_id: orgId };
+      if (!row.id && row.label) {
+        row.id = row.label.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
+      }
+      if (!row.id) {
+        toast("Please enter a property name or unit ID", "error");
+        return;
+      }
       await dbUpsert(row, token);
       const fresh = await dbGet(orgId, token);
       setData(Array.isArray(fresh) ? fresh : []);
@@ -5969,6 +5990,7 @@ export default function App() {
           onSave={async form => { await handleSave(form); }}
           onDelete={async id => { await handleDelete(id); setEditItem(null); }}
           token={token}
+          onSwitchToEdit={savedForm => { setEditItem(savedForm); setIsNew(false); }}
           onArchive={id => { handleArchive(id); setEditItem(null); }}
         />
       )}
