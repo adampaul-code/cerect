@@ -5508,19 +5508,34 @@ export default function App(){
         if(!val) return null;
         const s = String(val).trim();
         if(!s) return null;
-        // Already a date string
+        // Already YYYY-MM-DD
         if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        // DD/MM/YYYY
         if(/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
           const [d,m,y] = s.split('/');
           return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
         }
-        // Excel serial number (e.g. 45632)
+        // Excel serial number
         const num = Number(s);
         if(!isNaN(num) && num > 1000 && num < 100000) {
           const d = new Date(Date.UTC(1899, 11, 30) + num * 86400000);
           return d.toISOString().slice(0, 10);
         }
-        return s || null;
+        // Long-form English: "31st December 2027", "1st January 2026" etc.
+        const months = {january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+        const longMatch = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+(\w+)\s+(\d{4})$/i);
+        if(longMatch) {
+          const day = String(longMatch[1]).padStart(2,'0');
+          const month = months[longMatch[2].toLowerCase()];
+          const year = longMatch[3];
+          if(month) return `${year}-${String(month).padStart(2,'0')}-${day}`;
+        }
+        // Try JS Date parse as last resort
+        try {
+          const d = new Date(s);
+          if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+        } catch {}
+        return null;
       }
 
       const DATE_COLS = new Set(['review','move_in_date','move_out_date','deleted_at']);
