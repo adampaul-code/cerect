@@ -248,6 +248,17 @@ body {
   grid-template-columns: 1fr 1fr;
 }
 
+.login-page > .login-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  padding: 48px;
+  max-width: 420px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 @media (max-width: 768px) {
   .login-page { grid-template-columns: 1fr; }
   .login-brand { display: none; }
@@ -355,8 +366,14 @@ body {
 }
 
 .login-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  padding: 48px 48px;
   width: 100%;
-  max-width: 380px;
+  max-width: 420px;
+  margin: 0 auto;
 }
 
 .login-heading {
@@ -1451,6 +1468,11 @@ function LoginPage({ onLogin }) {
 
   return (
     <div className="login-page">
+      <div className="login-brand">
+        <ShieldLogo size={56} />
+        <div style={{ fontFamily: "var(--fh)", fontSize: 32, fontWeight: 800, color: "#fff", marginTop: 16, marginBottom: 8 }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
+        <div style={{ fontSize: 15, color: "rgba(255,255,255,0.7)", maxWidth: 280, lineHeight: 1.6 }}>Property & Storage Management Platform</div>
+      </div>
       <div className="login-box">
         <div className="login-logo" style={{ flexDirection: "column", gap: 8 }}>
           <ShieldLogo size={52} />
