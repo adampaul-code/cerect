@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 
 // Cerect v2.0 — Multi-tenant Storage Management Platform
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
-const SUPABASE_KEY = "sb_publishable_kksKsuIafGCDfqbrz7T-6Q_ie1bLHl9";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
 const BASE_H = { "Content-Type": "application/json", apikey: SUPABASE_KEY };
 const SUPER_ADMIN_EMAIL = "adamjpaul@protonmail.com";
 const AUTH_H = (token) => ({ "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` });
