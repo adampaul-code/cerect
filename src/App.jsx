@@ -5662,7 +5662,7 @@ export default function App(){
     } else if(isStorage){
       // Empty unit — delete it entirely
       try{
-        await dbDelete(unit.id,token);
+        await dbDelete(unit.id,token,orgId);
         setData(d=>d.filter(r=>r.id!==id));
         auditLog(token,orgId,userEmail,"delete","tenant",unit.id,name,{category:unit.category});
         showToast(`🗑️ Unit ${unit.id} deleted`);
@@ -5746,7 +5746,7 @@ export default function App(){
         auditLog(token,orgId,userEmail,"archive","tenant",id,name,{category:unit.category,unit_id:id,archive_id:archiveId});
         showToast(`📦 "${name}" archived — unit marked as Available`);
       } else {
-        await dbDelete(id,token);
+        await dbDelete(id, token, orgId);
         setData(d=>d.filter(r=>r.id!==id));
         auditLog(token,orgId,userEmail,"archive","tenant",id,name,{category:unit.category,archive_id:archiveId});
         showToast(`📦 "${name}" archived successfully`);
@@ -5789,7 +5789,7 @@ export default function App(){
         await dbUpsert(restored,token);
         // If this was a storage snapshot (generated ID), clean up the snapshot row
         if(row.id!==orig.id){
-          await dbDelete(row.id,token);
+          await dbDelete(row.id,token,orgId);
         }
         const fresh=await dbGet(token,orgId);
         setData(fresh);
@@ -5870,7 +5870,7 @@ export default function App(){
     if(!window.confirm("Permanently delete this record? This cannot be undone.")) return;
     try{
       if(isDeleted){
-        await dbDelete(id,token);
+        await dbDelete(id,token,orgId);
       } else {
         await archiveDelete(id,token);
       }
@@ -6009,7 +6009,7 @@ export default function App(){
   async function handleDeleteRow(rowName){
     try{
       const units=data.filter(u=>u.row_name===rowName);
-      for(const u of units){await dbDelete(u.id,token);}
+      for(const u of units){await dbDelete(u.id,token,orgId);}
       setData(d=>d.filter(u=>u.row_name!==rowName));
       await areasDelete(rowName,token,orgId);
       const fresh=await areasGet(token, orgId);
