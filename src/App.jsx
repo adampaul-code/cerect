@@ -1888,12 +1888,12 @@ function Payments({data, token, showToast, onStatusUpdate, orgId, onAudit}){
   const active = data.filter(u => ["occupied","new","arrears"].includes(u.status) && u.rent);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !orgId) return;
     setLoadingRec(true);
     setDbError(false);
     paymentRecordList(viewMonth, token, orgId)
       .then(r => { setRecords(Array.isArray(r) ? r : []); })
-      .catch(e => { console.warn("payment_records fetch failed:", e.message); setDbError(true); setRecords([]); })
+      .catch(() => { setDbError(true); setRecords([]); })
       .finally(() => setLoadingRec(false));
   }, [viewMonth, token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2034,7 +2034,7 @@ function Payments({data, token, showToast, onStatusUpdate, orgId, onAudit}){
         <div style={{background:"#FFF8E1",border:"1.5px solid #FFD54F",borderRadius:8,padding:"14px 18px",marginBottom:18,fontSize:13,color:"#5D4037"}}>
           <strong>⚙️ One-time setup required</strong><br/>
           The payment tracking table doesn't exist yet in your database. Run this SQL in your <a href="https://supabase.com/dashboard/project/lbealsgloqoepazfrgbj/sql/new" target="_blank" rel="noreferrer" style={{color:"var(--navy)"}}>Supabase SQL editor</a>:<br/><br/>
-          <code style={{display:"block",background:"#F5F5F5",padding:"10px 12px",borderRadius:6,fontSize:12,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{"create table payment_records (\n  id uuid primary key default gen_random_uuid(),\n  tenant_id text not null,\n  period_month text not null,\n  amount numeric,\n  method text,\n  notes text,\n  paid_at timestamptz,\n  created_at timestamptz default now(),\n  unique(tenant_id, period_month)\n);\nalter table payment_records disable row level security;"}</code>
+          <code style={{display:"block",background:"#F5F5F5",padding:"10px 12px",borderRadius:6,fontSize:12,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{"alter table payment_records add column if not exists org_id uuid;\nalter table payment_records drop constraint if exists payment_records_tenant_id_period_month_key;\nalter table payment_records add constraint if not exists payment_records_org_tenant_month_key unique(org_id, tenant_id, period_month);\nalter table payment_records disable row level security;\ngrant select, insert, update, delete on table payment_records to anon, authenticated;"}</code>
         </div>
       )}
 
@@ -5616,7 +5616,8 @@ export default function App(){
   useEffect(()=>{
     if(token && orgId) loadData();
     else if(!token) setLoading(false);
-  },[token, orgId, loadData]);
+    else if(token && !orgId && !orgLoading) setLoading(false); // has token but no org yet — orgLoading will trigger loadData when ready
+  },[token, orgId, loadData, orgLoading]);
 
   async function handleSave(row){
     try{
