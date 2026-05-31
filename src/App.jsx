@@ -4843,6 +4843,7 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     import: { bg: "#EEF4FF", color: "#3B5FA0" },
     login: { bg: "#F5F5F5", color: "#888" },
   };
+  const [showCreateTest, setShowCreateTest] = useState(false);
   const [testOrgName, setTestOrgName] = useState("Cerect Test Business");
   const [creatingTest, setCreatingTest] = useState(false);
 
