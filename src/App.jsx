@@ -4768,7 +4768,28 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setInviting(false);
   }
 
-  async function handleAddSuperAdmin() {
+  const [showCreateTest, setShowCreateTest] = useState(false);
+  const [testOrgName, setTestOrgName] = useState("Cerect Test Business");
+  const [creatingTest, setCreatingTest] = useState(false);
+
+  async function handleCreateTestOrg() {
+    if (!testOrgName.trim()) return;
+    setCreatingTest(true);
+    try {
+      const slug = testOrgName.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations`, {
+        method: "POST",
+        headers: { ...authH(token), Prefer: "return=representation" },
+        body: JSON.stringify({ name: testOrgName.trim(), slug, plan: "trial" }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setMsg(`✅ Test org "${testOrgName.trim()}" created — use 👁 View as to enter it`);
+      setShowCreateTest(false);
+      setTestOrgName("Cerect Test Business");
+      await reload();
+    } catch (e) { setMsg(`❌ Failed: ${e.message}`); }
+    setCreatingTest(false);
+  }
     if (!newSuperAdmin.trim()) return;
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/super_admins`, {
@@ -4800,6 +4821,17 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     return orgUsers.find(ou => ou.org_id === orgId && ou.user_id === userId);
   }
 
+  async function handleArchiveOrg(org) {
+    if (!window.confirm(`Archive "${org.name}"?\n\nTheir account will be locked — they cannot log in but all their data and documents are preserved. You can restore them at any time.`)) return;
+    await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ plan: "archived" }),
+    });
+    setOrgs(os => os.map(o => o.id === org.id ? { ...o, plan: "archived" } : o));
+    setMsg(`✅ "${org.name}" has been archived — their data is preserved`);
+  }
+
   async function handleSuspend(org) {
     if (!window.confirm(`Suspend "${org.name}"? Their users will not be able to log in.`)) return;
     await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
@@ -4811,14 +4843,14 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     setMsg(`✅ ${org.name} suspended`);
   }
 
-  async function handleReactivate(org) {
+  async function handleRestore(org) {
     await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
       method: "PATCH",
       headers: { ...authH(token), Prefer: "return=minimal" },
       body: JSON.stringify({ plan: "trial" }),
     });
     setOrgs(os => os.map(o => o.id === org.id ? { ...o, plan: "trial" } : o));
-    setMsg(`✅ ${org.name} reactivated`);
+    setMsg(`✅ "${org.name}" restored — they can log in again`);
   }
 
   async function handleSetPlan(orgId, plan) {
@@ -4855,6 +4887,7 @@ function SuperAdminPage({ token, session, onImpersonate }) {
     professional: { bg: "#EEF4FF", color: "#3B5FA0", border: "#B8D0F8" },
     business: { bg: "#F3E5F5", color: "#7B1FA2", border: "#CE93D8" },
     suspended: { bg: "#FFF0EE", color: "var(--danger)", border: "#FFCDD2" },
+    archived: { bg: "#F5F5F5", color: "#888", border: "#DDD" },
   };
 
   return loading ? (
@@ -4902,6 +4935,30 @@ function SuperAdminPage({ token, session, onImpersonate }) {
         <div className="kpi-card"><div className="kpi-label">Active</div><div className="kpi-value">{orgs.filter(o => o.plan !== "suspended").length}</div><div className="kpi-meta">Trial + paid</div></div>
         <div className="kpi-card"><div className="kpi-label">Paid</div><div className="kpi-value">{orgs.filter(o => ["core","professional","business"].includes(o.plan)).length}</div><div className="kpi-meta">Paying customers</div></div>
         <div className="kpi-card"><div className="kpi-label">Total Users</div><div className="kpi-value">{allUsers.length}</div><div className="kpi-meta">Across all orgs</div></div>
+      </div>
+
+      {/* Create test org */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>🧪 Create Test Organisation</div>
+            <div style={{ fontSize: 13, color: "var(--sub)" }}>Create a sandbox org to test the platform. Use 👁 View as to enter it.</div>
+          </div>
+          <button onClick={() => setShowCreateTest(s => !s)} className="btn btn-outline btn-sm">{showCreateTest ? "✕ Cancel" : "+ Create Test Org"}</button>
+        </div>
+        {showCreateTest && (
+          <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
+            <input
+              value={testOrgName}
+              onChange={e => setTestOrgName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleCreateTestOrg()}
+              style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 14, padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, outline: "none" }}
+            />
+            <button onClick={handleCreateTestOrg} disabled={creatingTest || !testOrgName.trim()} className="btn btn-navy btn-sm">
+              {creatingTest ? "Creating…" : "Create →"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Super admin management */}
@@ -4978,9 +5035,12 @@ function SuperAdminPage({ token, session, onImpersonate }) {
                   >
                     {["trial", "core", "professional", "business", "suspended"].map(p => <option key={p} value={p}>{p}</option>)}
                   </select>
-                  {org.plan === "suspended"
-                    ? <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={e => { e.stopPropagation(); handleReactivate(org); }}>↩ Reactivate</button>
-                    : <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); handleSuspend(org); }}>⏸ Suspend</button>
+                  {(org.plan === "suspended" || org.plan === "archived")
+                    ? <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={e => { e.stopPropagation(); handleRestore(org); }}>↩ Restore</button>
+                    : <>
+                        <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); handleSuspend(org); }}>⏸ Suspend</button>
+                        <button className="sp-btn" style={{ fontSize: 11, background: "#F5F5F5", color: "#888", borderColor: "#DDD" }} onClick={e => { e.stopPropagation(); handleArchiveOrg(org); }}>📦 Archive</button>
+                      </>
                   }
                   <button className="sp-btn sp-btn-navy" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); onImpersonate(org); }}>👁 View as</button>
                   <button className="sp-btn" style={{ fontSize: 11, color: "var(--danger)", borderColor: "var(--danger)" }} onClick={e => { e.stopPropagation(); handleDeleteOrg(org); }}>🗑️ Delete</button>
@@ -5209,6 +5269,7 @@ export default function App(){
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [impersonating, setImpersonating] = useState(null);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [orgLocked, setOrgLocked] = useState(null); // "archived" | "suspended" | null
   const [page,setPage]=useState("dashboard");
   const [mobileNav,setMobileNav]=useState(false);
   useEffect(()=>{ window.__camSetPage=setPage; return()=>{ delete window.__camSetPage; }; },[setPage]);
@@ -5275,7 +5336,14 @@ export default function App(){
       if (row?.org_id) {
         const o = await getOrgDetails(row.org_id, session.access_token);
         setOrg(o);
-        setNeedsOnboarding(false);
+        // If org is archived or suspended, block access
+        if (o?.plan === "archived" || o?.plan === "suspended") {
+          setNeedsOnboarding(false);
+          setOrgLocked(o.plan);
+        } else {
+          setNeedsOnboarding(false);
+          setOrgLocked(null);
+        }
       } else {
         // Super admins don't need an org — send them to super admin panel
         checkSuperAdmin(session.user.email, session.access_token).then(isSA => {
@@ -5329,6 +5397,7 @@ export default function App(){
     setNeedsOnboarding(false);
     setImpersonating(null);
     setIsSuperAdmin(false);
+    setOrgLocked(null);
     setData([]); setAreas([]); setEnquiries([]); setTasks([]);
     try{localStorage.removeItem("cerect_session");}catch{}
   }
@@ -5824,6 +5893,31 @@ export default function App(){
   if(needsOnboarding) return(
     <><style>{CSS}</style>
     <OnboardingPage session={session} onComplete={o=>{setOrg(o);setNeedsOnboarding(false);showToast("✅ Welcome to Cerect!");}}/>
+    </>
+  );
+
+  if(orgLocked) return(
+    <><style>{CSS}</style>
+    <div style={{minHeight:"100vh",background:"var(--mist)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:"48px 40px",maxWidth:480,width:"100%",textAlign:"center",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
+        <div style={{fontSize:48,marginBottom:16}}>{orgLocked==="archived"?"📦":"⏸"}</div>
+        <div style={{fontFamily:"var(--fh)",fontSize:22,fontWeight:700,color:"var(--navy)",marginBottom:12}}>
+          {orgLocked==="archived"?"Account Archived":"Account Suspended"}
+        </div>
+        <p style={{fontSize:14,color:"var(--sub)",lineHeight:1.6,marginBottom:24}}>
+          {orgLocked==="archived"
+            ?"Your Cerect account has been archived. Your data is safely preserved and can be restored at any time."
+            :"Your Cerect account has been suspended. Please contact support to reactivate your account."
+          }
+        </p>
+        <div style={{background:"var(--mist)",borderRadius:10,padding:"16px 20px",fontSize:13,color:"var(--sub)",marginBottom:24}}>
+          Contact us at <strong>support@cerect.com</strong> to restore your account or download your data.
+        </div>
+        <button onClick={handleSignOut} style={{background:"var(--navy)",color:"#fff",border:"none",borderRadius:8,padding:"12px 24px",fontWeight:600,cursor:"pointer",fontSize:14}}>
+          Sign Out
+        </button>
+      </div>
+    </div>
     </>
   );
 
