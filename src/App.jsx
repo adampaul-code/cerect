@@ -1,20 +1,58 @@
-// Cerect v1.8 — Storage Management Platform
-// https://cerect.com
-
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 
+// Cerect v2.0 — Multi-tenant Storage Management Platform
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
-const SUPER_ADMIN_EMAIL = "adamjpaul@protonmail.com";
+const SUPABASE_KEY = "sb_publishable_kksKsuIafGCDfqbrz7T-6Q_ie1bLHl9";
 const BASE_H = { "Content-Type": "application/json", apikey: SUPABASE_KEY };
+const SUPER_ADMIN_EMAIL = "adamjpaul@protonmail.com";
+const AUTH_H = (token) => ({ "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` });
+
+async function adminCall(action, params={}) {
+  const r = await fetch("/api/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...params })
+  });
+  return r.json();
+}
+
+async function sendInviteEmail(toEmail, tempPassword) {
+  const r = await fetch("/api/send-invite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to: toEmail, tempPassword })
+  });
+  const d = await r.json();
+  return d;
+}
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
+async function resetPassword(email) {
+  const d = await adminCall("resetPassword", { email });
+  if (d.error) throw new Error(d.error);
+  // Send email with temp password via Resend
+  const emailR = await fetch("/api/send-reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to: email, tempPassword: d.tempPass })
+  });
+  return emailR.ok;
+}
+
+async function changePassword(newPassword, token) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: "PUT",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ password: newPassword })
+  });
+  return r.ok;
+}
+
 async function signIn(email, password) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-    method: "POST",
-    headers: { ...BASE_H },
-    body: JSON.stringify({ email, password }),
+    method: "POST", headers: { ...BASE_H },
+    body: JSON.stringify({ email, password })
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.error_description || data.msg || "Login failed");
@@ -23,8 +61,7 @@ async function signIn(email, password) {
 
 async function signOut(token) {
   await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
-    method: "POST",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    method: "POST", headers: { ...BASE_H, Authorization: `Bearer ${token}` }
   });
 }
 
@@ -32,17 +69,31 @@ async function refreshSession(refreshToken) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
     headers: { ...BASE_H },
-    body: JSON.stringify({ refresh_token: refreshToken }),
+    body: JSON.stringify({ refresh_token: refreshToken })
   });
   if (!r.ok) return null;
   return r.json();
 }
 
+async function getUser(token) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` }
+  });
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function listUsers() {
+  const d = await adminCall("listUsers");
+  return d.users || [];
+}
+
+// ─── MFA helpers ──────────────────────────────────────────────────────────────
 async function mfaEnroll(token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/factors`, {
     method: "POST",
     headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ friendly_name: "Cerect", factor_type: "totp" }),
+    body: JSON.stringify({ friendly_name: "CamStorage", factor_type: "totp" })
   });
   return r.json();
 }
@@ -50,7 +101,7 @@ async function mfaEnroll(token) {
 async function mfaChallenge(factorId, token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/factors/${factorId}/challenge`, {
     method: "POST",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` }
   });
   return r.json();
 }
@@ -59,41 +110,37 @@ async function mfaVerify(factorId, challengeId, code, token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/factors/${factorId}/verify`, {
     method: "POST",
     headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ challenge_id: challengeId, code }),
+    body: JSON.stringify({ challenge_id: challengeId, code })
   });
   return r.json();
 }
 
 async function mfaListFactors(token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` }
   });
   if (!r.ok) return [];
   const d = await r.json();
   return d.factors || [];
 }
 
-async function resetPassword(email) {
-  await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
-    method: "POST",
-    headers: BASE_H,
-    body: JSON.stringify({ email }),
+async function mfaUnenroll(factorId, token) {
+  await fetch(`${SUPABASE_URL}/auth/v1/factors/${factorId}`, {
+    method: "DELETE",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` }
   });
 }
 
-function ShieldLogo({ size = 40 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M20 3L5 9v10c0 9.4 6.4 18.2 15 20.5C29.6 37.2 36 28.4 36 19V9L20 3z" fill="var(--navy)" />
-      <path d="M20 8L9 13v8c0 6.6 4.8 12.8 11 14.7C26.2 33.8 31 27.6 31 21v-8L20 8z" fill="var(--gold)" opacity="0.3" />
-      <path d="M16 20l3 3 6-6" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+async function deleteUser(userId) {
+  await adminCall("deleteUser", { userId });
 }
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
 function authH(token) {
   return { ...BASE_H, Authorization: `Bearer ${token}` };
 }
 
+// ─── Org helpers (multi-tenant) ───────────────────────────────────────────────
 async function getOrgForUser(userId, token) {
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/org_users?user_id=eq.${userId}&limit=1`,
@@ -113,17 +160,15 @@ async function createOrg(name, userId, token) {
     body: JSON.stringify({ name, slug, plan: "trial" }),
   });
   const text = await r.text();
-  console.log("createOrg response:", r.status, text);
   if (!r.ok) throw new Error(`Database error (${r.status}): ${text}`);
   let org = null;
   try { const arr = JSON.parse(text); org = Array.isArray(arr) ? arr[0] : arr; } catch {}
   if (!org?.id) throw new Error("Organisation created but ID not returned");
-  const r2 = await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
+  await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
     method: "POST",
     headers: { ...authH(token), Prefer: "return=minimal" },
     body: JSON.stringify({ org_id: org.id, user_id: userId, role: "admin" }),
   });
-  console.log("org_users response:", r2.status);
   return org;
 }
 
@@ -137,2060 +182,1422 @@ async function getOrgDetails(orgId, token) {
   return rows?.[0] || null;
 }
 
-// ─── Data constants ───────────────────────────────────────────────────────────
-const SL = { occupied: "Occupied", arrears: "In Arrears", leaving: "Leaving", new: "New Customer", pending: "Pending", available: "Available" };
-const STATUSES = ["occupied", "arrears", "leaving", "new", "pending", "available"];
-const PAYMENTS = ["Monthly DD", "Stripe", "SO", "Pays Manually", "DD", "—", "Other"];
-const UC = { occupied: "uc-occ", arrears: "uc-arr", leaving: "uc-lea", new: "uc-new", pending: "uc-pen", available: "uc-avl" };
-const DC = { occupied: "d-occ", arrears: "d-arr", leaving: "d-lea", new: "d-new", pending: "d-pen", available: "d-avl" };
 
-// ─── DB helpers ───────────────────────────────────────────────────────────────
-async function dbGet(orgId, token) {
+const DOC_TAGS = ["Contract","ID / Passport","Correspondence","Payment Record","Insurance","Reference","Photo","Other"];
+
+async function saveDocTag(filePath, tenantId, tag, originalName, token, orgId) {
+  await fetch(`${SUPABASE_URL}/rest/v1/document_tags`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ file_path: filePath, tenant_id: tenantId, tag, original_name: originalName, org_id: orgId })
+  });
+}
+async function getDocTags(tenantId, token, orgId) {
+  const safeId = (tenantId||"").replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g, '_');
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&order=category,id&deleted_at=is.null`,
+    `${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&file_path=like.${encodeURIComponent(safeId + '/%')}`,
     { headers: authH(token) }
   );
-  if (r.status === 401) throw new Error("SESSION_EXPIRED");
+  return r.ok ? r.json() : [];
+}
+
+async function getAllDocTags(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&order=id.desc`, { headers: authH(token) });
+  return r.ok ? r.json() : [];
+}
+async function deleteDocTag(filePath, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}`, {
+    method: "DELETE", headers: authH(token)
+  });
+}
+async function updateDocTag(filePath, tag, token) {
+  // Fetch the record id first
+  const getR = await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}&select=id`, {
+    headers: AUTH_H(token)
+  });
+  const rows = await getR.json();
+  if (Array.isArray(rows) && rows[0]?.id) {
+    // Update by id — much more reliable than filtering by file_path
+    await fetch(`${SUPABASE_URL}/rest/v1/document_tags?id=eq.${rows[0].id}`, {
+      method: "PATCH",
+      headers: { ...AUTH_H(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ tag })
+    });
+  } else {
+    // No record exists — insert
+    await fetch(`${SUPABASE_URL}/rest/v1/document_tags`, {
+      method: "POST",
+      headers: { ...AUTH_H(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ file_path: filePath, tag })
+    });
+  }
+}
+
+async function uploadDocument(file, tenantId, token) {
+  const safeId = (tenantId||"").replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `${safeId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, "Content-Type": file.type||"application/octet-stream", "x-upsert": "true" },
+    body: file
+  });
+  if (!r.ok) throw new Error("Upload failed");
+  return path;
+}
+
+async function listDocuments(tenantId, token) {
+  // Only sanitise individual path segments, preserve slashes
+  const safePath = tenantId.split('/').map(seg => seg.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,'_')).join('/');
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+    method: "POST",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ prefix: safePath + "/", limit: 100, sortBy: { column: "created_at", order: "desc" } })
+  });
+  if (!r.ok) return [];
   return r.json();
 }
 
+async function deleteDocument(path, token) {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` }
+  });
+  return r.ok;
+}
+
+async function getSignedUrl(path, token) {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${path}`, {
+    method: "POST",
+    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ expiresIn: 3600 })
+  });
+  const d = await r.json();
+  return d.signedURL ? `${SUPABASE_URL}/storage/v1${d.signedURL}` : null;
+}
+
+function fileIcon(name) {
+  const ext = (name.split('.').pop()||'').toLowerCase();
+  if(['pdf'].includes(ext)) return '📄';
+  if(['doc','docx'].includes(ext)) return '📝';
+  if(['xls','xlsx','csv'].includes(ext)) return '📊';
+  if(['jpg','jpeg','png','gif','webp'].includes(ext)) return '🖼️';
+  if(['zip','rar','7z'].includes(ext)) return '📦';
+  return '📎';
+}
+
+function formatBytes(bytes) {
+  if(!bytes) return '';
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1048576).toFixed(1) + ' MB';
+}
+
+async function areasGet(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/areas?org_id=eq.${orgId}&order=sort_order,name`, { headers: authH(token) });
+  return r.json();
+}
+async function areasUpsert(name, category, sortOrder, token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/areas`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify({ name, category, sort_order: sortOrder, org_id: orgId })
+  });
+  return r.json();
+}
+async function areasDelete(name, token, orgId) {
+  await fetch(`${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(name)}&org_id=eq.${orgId}`, {
+    method: "DELETE", headers: authH(token)
+  });
+}
+async function areasUpdateOrder(names, token, orgId) {
+  for(let i=0; i<names.length; i++){
+    await fetch(`${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(names[i])}&org_id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ sort_order: i })
+    });
+  }
+}
+
+// ─── Enquiry helpers ─────────────────────────────────────────────────────────
+async function enquiryList(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/enquiries?org_id=eq.${orgId}&order=enquiry_date.desc`, { headers: authH(token) });
+  return r.ok ? r.json() : [];
+}
+async function enquirySave(data, token, orgId) {
+  const clean={...data, org_id: orgId, updated_at: new Date().toISOString()};
+  if(!clean.follow_up_date) clean.follow_up_date=null;
+  if(!clean.enquiry_date) clean.enquiry_date=null;
+  if(!clean.email) clean.email=null;
+  if(!clean.phone) clean.phone=null;
+  if(!clean.size_needed) clean.size_needed=null;
+  if(!clean.notes) clean.notes=null;
+  if(!clean.earmarked_unit) clean.earmarked_unit=null;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/enquiries`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify(clean)
+  });
+  return r.ok ? r.json() : null;
+}
+async function enquiryUpdate(id, data, token) {
+  const clean={...data, updated_at: new Date().toISOString()};
+  if(clean.follow_up_date==="") clean.follow_up_date=null;
+  if(clean.enquiry_date==="") clean.enquiry_date=null;
+  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...authH(token), Prefer: "return=minimal" },
+    body: JSON.stringify(clean)
+  });
+}
+async function enquiryDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
+    method: "DELETE", headers: authH(token)
+  });
+}
+
+// ─── Archived tenants helpers ────────────────────────────────────────────────
+async function archiveSave(unitId, tenantData, token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify({ 
+      org_id: orgId,
+      original_unit_id: String(unitId), 
+      tenant_data: JSON.parse(JSON.stringify(tenantData, (key, val) => val === undefined ? null : val))
+    })
+  });
+  const text = await r.text();
+  try { return JSON.parse(text); } catch { return { error: text }; }
+}
+async function archiveList(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?org_id=eq.${orgId}&order=archived_at.desc`, { headers: authH(token) });
+  return r.json();
+}
+async function archiveDelete(id, token) {
+  await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${id}`, { method: "DELETE", headers: authH(token) });
+}
+
+async function dbGet(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&order=category,id&deleted_at=is.null`, { headers: authH(token) });
+  if(r.status===401) throw new Error("SESSION_EXPIRED");
+  return r.json();
+}
+async function dbGetDeleted(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&deleted_at=not.is.null&archived=eq.false&order=deleted_at.desc`, { headers: authH(token) });
+  return r.json();
+}
 async function dbUpsert(row, token) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
     method: "POST",
     headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify(row),
+    body: JSON.stringify(row)
   });
   return r.json();
 }
-
-async function dbDelete(id, orgId, token) {
-  await fetch(
-    `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
-    { method: "DELETE", headers: authH(token) }
-  );
-}
-
-async function areasGet(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/areas?org_id=eq.${orgId}&order=sort_order,name`,
-    { headers: authH(token) }
-  );
-  return r.json();
-}
-
-async function areasUpsert(name, category, sortOrder, orgId, token) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/areas`, {
-    method: "POST",
-    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify({ name, category, sort_order: sortOrder, org_id: orgId }),
+async function dbDelete(id, token, orgId) {
+  await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`, {
+    method: "DELETE", headers: authH(token)
   });
-  return r.json();
 }
 
-async function areasDelete(name, orgId, token) {
-  await fetch(
-    `${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(name)}&org_id=eq.${orgId}`,
-    { method: "DELETE", headers: authH(token) }
-  );
-}
-
-async function areasUpdateOrder(names, orgId, token) {
-  for (let i = 0; i < names.length; i++) {
-    await fetch(
-      `${SUPABASE_URL}/rest/v1/areas?name=eq.${encodeURIComponent(names[i])}&org_id=eq.${orgId}`,
-      {
-        method: "PATCH",
-        headers: { ...authH(token), Prefer: "return=minimal" },
-        body: JSON.stringify({ sort_order: i }),
-      }
-    );
-  }
-}
-
-// ─── CSS ──────────────────────────────────────────────────────────────────────
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap');
-
-*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --navy: #0F3A52;
-  --navy2: #1A4F72;
-  --gold: #C9A84C;
-  --gold2: #E8C472;
-  --white: #fff;
-  --mist: #F0F4F8;
-  --mist2: #E4ECF3;
-  --text: #0B1E3D;
-  --sub: #5A6E8A;
-  --border: rgba(11,30,61,.10);
-  --success: #1A7F5A;
-  --danger: #C0392B;
-  --warning: #B7860B;
-  --fh: 'Syne', sans-serif;
-  --fb: 'DM Sans', sans-serif;
-  --r: 10px;
-  --r2: 16px;
-  --sh: 0 2px 12px rgba(11,30,61,.08);
-  --shl: 0 8px 40px rgba(11,30,61,.14);
-}
-
-body {
-  font-family: var(--fb);
-  background: var(--mist);
-  color: var(--text);
-  -webkit-font-smoothing: antialiased;
-}
-
-/* ── Login ───────────────────────────────────────────────────────────────── */
-.login-page {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
-.login-page > .login-box {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: stretch;
-  padding: 48px;
-  max-width: 420px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-@media (max-width: 768px) {
-  .login-page { grid-template-columns: 1fr; }
-  .login-brand { display: none; }
-}
-
-.login-brand {
-  background: var(--navy);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 60px;
-  position: relative;
-  overflow: hidden;
-}
-
-.login-brand::before {
-  content: '';
-  position: absolute;
-  top: -120px; right: -120px;
-  width: 500px; height: 500px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(201,168,76,.12) 0%, transparent 70%);
-}
-
-.login-brand::after {
-  content: '';
-  position: absolute;
-  bottom: -80px; left: -80px;
-  width: 360px; height: 360px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(201,168,76,.08) 0%, transparent 70%);
-}
-
-.brand-logo {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 48px;
-  position: relative;
-  z-index: 1;
-}
-
-.brand-wordmark {
-  font-family: var(--fh);
-  font-size: 28px;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: -0.5px;
-}
-
-.brand-wordmark span {
-  color: var(--gold);
-}
-
-.brand-tagline {
-  font-family: var(--fh);
-  font-size: 42px;
-  font-weight: 700;
-  color: #fff;
-  line-height: 1.15;
-  margin-bottom: 24px;
-  position: relative;
-  z-index: 1;
-}
-
-.brand-tagline em {
-  font-style: normal;
-  color: var(--gold);
-}
-
-.brand-sub {
-  font-size: 16px;
-  color: rgba(255,255,255,.6);
-  line-height: 1.6;
-  max-width: 340px;
-  position: relative;
-  z-index: 1;
-}
-
-.brand-dots {
-  position: absolute;
-  bottom: 48px;
-  left: 60px;
-  display: flex;
-  gap: 8px;
-  z-index: 1;
-}
-
-.brand-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: rgba(255,255,255,.25);
-}
-
-.brand-dot.active { background: var(--gold); }
-
-.login-form-wrap {
-  background: #fff;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  padding: 48px 40px;
-}
-
-.login-box {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: stretch;
-  padding: 48px 48px;
-  width: 100%;
-  max-width: 420px;
-  margin: 0 auto;
-}
-
-.login-heading {
-  font-family: var(--fh);
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-
-.login-hint {
-  font-size: 14px;
-  color: var(--sub);
-  margin-bottom: 32px;
-}
-
-.login-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-}
-
-.login-field label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--sub);
-  text-transform: uppercase;
-  letter-spacing: .6px;
-}
-
-.login-field input {
-  font-family: var(--fb);
-  font-size: 15px;
-  padding: 11px 14px;
-  border: 1.5px solid var(--mist2);
-  border-radius: var(--r);
-  outline: none;
-  transition: border-color .15s;
-  color: var(--text);
-  background: #fff;
-}
-
-.login-field input:focus { border-color: var(--navy2); }
-
-.login-btn {
-  width: 100%;
-  background: var(--navy);
-  color: #fff;
-  font-family: var(--fb);
-  font-size: 15px;
-  font-weight: 500;
-  padding: 12px;
-  border: none;
-  border-radius: var(--r);
-  cursor: pointer;
-  margin-top: 8px;
-  transition: background .15s, transform .1s;
-  letter-spacing: .1px;
-}
-
-.login-btn:hover { background: var(--navy2); }
-.login-btn:active { transform: scale(.99); }
-.login-btn:disabled { opacity: .55; cursor: not-allowed; }
-
-.login-err {
-  background: #FFF0EE;
-  border: 1px solid #FFCDD2;
-  border-radius: var(--r);
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--danger);
-  margin-bottom: 14px;
-}
-
-.login-ok {
-  background: #EDF7F2;
-  border: 1px solid #A8DEC2;
-  border-radius: var(--r);
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--success);
-  margin-bottom: 14px;
-}
-
-.login-mfa-box {
-  background: var(--mist);
-  border-radius: var(--r);
-  padding: 16px;
-  margin-bottom: 16px;
-  text-align: center;
-}
-
-.login-mfa-title {
-  font-family: var(--fh);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--navy);
-  margin-bottom: 4px;
-}
-
-.login-mfa-sub {
-  font-size: 13px;
-  color: var(--sub);
-}
-
-.login-link {
-  background: none;
-  border: none;
-  color: var(--navy2);
-  font-family: var(--fb);
-  font-size: 13px;
-  cursor: pointer;
-  text-decoration: underline;
-  margin-top: 16px;
-  display: block;
-  text-align: center;
-}
-
-.mfa-digits {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  margin: 16px 0;
-}
-
-.mfa-digit {
-  width: 44px; height: 52px;
-  border: 1.5px solid var(--mist2);
-  border-radius: var(--r);
-  font-size: 22px;
-  font-weight: 600;
-  text-align: center;
-  font-family: var(--fh);
-  color: var(--navy);
-  outline: none;
-  transition: border-color .15s;
-}
-
-.mfa-digit:focus { border-color: var(--navy2); }
-
-.login-footer {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--mist2);
-  text-align: center;
-  font-size: 12px;
-  color: var(--sub);
-}
-
-/* ── App shell ───────────────────────────────────────────────────────────── */
-.app { display: flex; min-height: 100vh; }
-
-.sidebar {
-  width: 232px;
-  min-height: 100vh;
-  background: var(--navy);
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  top: 0; left: 0;
-  z-index: 100;
-  transition: transform .25s ease;
-}
-
-@media (max-width: 900px) {
-  .sidebar { transform: translateX(-100%); }
-  .sidebar.open { transform: translateX(0); }
-  .main { margin-left: 0 !important; }
-}
-
-.sidebar-logo {
-  padding: 20px 18px 16px;
-  border-bottom: 1px solid rgba(255,255,255,.1);
-}
-
-.sidebar-wordmark {
-  font-family: var(--fh);
-  font-size: 22px;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: -0.3px;
-}
-
-.sidebar-wordmark span { color: var(--gold); }
-
-.sidebar-tagline {
-  font-size: 11px;
-  color: rgba(255,255,255,.4);
-  margin-top: 2px;
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: 12px 0;
-  overflow-y: auto;
-}
-
-.nav-section {
-  padding: 12px 18px 4px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .8px;
-  color: rgba(255,255,255,.3);
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 18px;
-  font-size: 14px;
-  color: rgba(255,255,255,.65);
-  cursor: pointer;
-  border-radius: 0;
-  transition: background .12s, color .12s;
-  border: none;
-  background: none;
-  width: 100%;
-  text-align: left;
-  font-family: var(--fb);
-}
-
-.nav-item:hover { background: rgba(255,255,255,.07); color: #fff; }
-
-.nav-item.active {
-  background: rgba(255,255,255,.12);
-  color: #fff;
-  font-weight: 500;
-}
-
-.nav-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  width: 3px;
-  height: 36px;
-  background: var(--gold);
-  border-radius: 0 2px 2px 0;
-}
-
-.nav-item { position: relative; }
-
-.nav-icon {
-  width: 18px; height: 18px;
-  opacity: .7;
-  flex-shrink: 0;
-}
-
-.nav-item.active .nav-icon,
-.nav-item:hover .nav-icon { opacity: 1; }
-
-.sidebar-bottom {
-  padding: 14px 18px;
-  border-top: 1px solid rgba(255,255,255,.1);
-}
-
-.user-chip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.user-avatar {
-  width: 30px; height: 30px;
-  border-radius: 50%;
-  background: rgba(255,255,255,.15);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-  flex-shrink: 0;
-}
-
-.user-email {
-  font-size: 12px;
-  color: rgba(255,255,255,.55);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.signout-btn {
-  background: none;
-  border: none;
-  color: rgba(255,255,255,.4);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  transition: color .12s;
-}
-
-.signout-btn:hover { color: rgba(255,255,255,.85); }
-
-.main {
-  margin-left: 232px;
-  flex: 1;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.topbar {
-  height: 56px;
-  background: #fff;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 28px;
-  gap: 16px;
-  position: sticky;
-  top: 0;
-  z-index: 50;
-}
-
-.topbar-title {
-  font-family: var(--fh);
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--text);
-  flex: 1;
-}
-
-.topbar-org {
-  font-size: 13px;
-  color: var(--sub);
-  background: var(--mist);
-  padding: 4px 10px;
-  border-radius: 99px;
-}
-
-.hamburger {
-  display: none;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px;
-  color: var(--text);
-}
-
-@media (max-width: 900px) { .hamburger { display: flex; } }
-
-.page { padding: 28px; flex: 1; }
-
-/* ── Cards ───────────────────────────────────────────────────────────────── */
-.card {
-  background: #fff;
-  border-radius: var(--r2);
-  border: 1px solid var(--border);
-  padding: 20px 24px;
-}
-
-.card-title {
-  font-family: var(--fh);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 4px;
-}
-
-.card-sub {
-  font-size: 13px;
-  color: var(--sub);
-  margin-bottom: 16px;
-}
-
-/* ── KPI grid ────────────────────────────────────────────────────────────── */
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
-  margin-bottom: 24px;
-}
-
-.kpi-card {
-  background: #fff;
-  border-radius: var(--r2);
-  border: 1px solid var(--border);
-  padding: 18px 22px;
-}
-
-.kpi-label {
-  font-size: 12px;
-  color: var(--sub);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  margin-bottom: 6px;
-}
-
-.kpi-value {
-  font-family: var(--fh);
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1;
-  margin-bottom: 4px;
-}
-
-.kpi-meta {
-  font-size: 12px;
-  color: var(--sub);
-}
-
-/* ── Pill / badge ─────────────────────────────────────────────────────────── */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 10px;
-  border-radius: 99px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.pill-occupied { background: #E6F4EE; color: #1A7F5A; }
-.pill-arrears  { background: #FEF3EE; color: #C0392B; }
-.pill-leaving  { background: #FFF8E6; color: #B7860B; }
-.pill-new      { background: #E8F0FE; color: #1A56C4; }
-.pill-pending  { background: #F3EDF7; color: #6B3FA0; }
-.pill-available{ background: var(--mist); color: var(--sub); }
-
-/* ── Coming soon placeholder ─────────────────────────────────────────────── */
-.coming-soon {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 320px;
-  gap: 12px;
-  color: var(--sub);
-}
-
-.coming-soon-icon {
-  width: 48px; height: 48px;
-  opacity: .25;
-}
-
-.coming-soon-title {
-  font-family: var(--fh);
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sub);
-}
-
-.coming-soon-sub {
-  font-size: 14px;
-  color: var(--sub);
-  opacity: .7;
-}
-
-/* ── Onboarding ──────────────────────────────────────────────────────────── */
-.onboard-page {
-  min-height: 100vh;
-  background: var(--mist);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.onboard-card {
-  background: #fff;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  padding: 40px;
-  width: 100%;
-  max-width: 520px;
-  box-shadow: var(--shl);
-}
-
-.onboard-logo {
-  font-family: var(--fh);
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--navy);
-  margin-bottom: 32px;
-  letter-spacing: -0.3px;
-}
-
-.onboard-logo span { color: var(--gold); }
-
-.onboard-steps {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  margin-bottom: 32px;
-}
-
-.onboard-step-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-}
-
-.onboard-step-circle {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  flex-shrink: 0;
-  transition: all .2s;
-}
-
-.onboard-step-circle.done {
-  background: var(--success);
-  color: #fff;
-}
-
-.onboard-step-circle.active {
-  background: var(--navy);
-  color: #fff;
-}
-
-.onboard-step-circle.pending {
-  background: var(--mist);
-  color: var(--sub);
-  border: 1.5px solid var(--mist2);
-}
-
-.onboard-step-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--sub);
-  white-space: nowrap;
-}
-
-.onboard-step-label.active { color: var(--navy); }
-.onboard-step-label.done { color: var(--success); }
-
-.onboard-step-line {
-  flex: 1;
-  height: 1px;
-  background: var(--mist2);
-  margin: 0 8px;
-}
-
-.onboard-heading {
-  font-family: var(--fh);
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-
-.onboard-sub {
-  font-size: 14px;
-  color: var(--sub);
-  line-height: 1.6;
-  margin-bottom: 24px;
-}
-
-.onboard-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-}
-
-.onboard-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--sub);
-  text-transform: uppercase;
-  letter-spacing: .6px;
-}
-
-.onboard-input {
-  font-family: var(--fb);
-  font-size: 15px;
-  padding: 11px 14px;
-  border: 1.5px solid var(--mist2);
-  border-radius: var(--r);
-  outline: none;
-  transition: border-color .15s;
-  color: var(--text);
-  background: #fff;
-  width: 100%;
-}
-
-.onboard-input:focus { border-color: var(--navy2); }
-
-.onboard-hint {
-  font-size: 12px;
-  color: var(--sub);
-}
-
-.onboard-btn {
-  width: 100%;
-  background: var(--navy);
-  color: #fff;
-  font-family: var(--fb);
-  font-size: 15px;
-  font-weight: 500;
-  padding: 12px;
-  border: none;
-  border-radius: var(--r);
-  cursor: pointer;
-  margin-top: 8px;
-  transition: background .15s;
-}
-
-.onboard-btn:hover { background: var(--navy2); }
-.onboard-btn:disabled { opacity: .5; cursor: not-allowed; }
-
-.onboard-err {
-  background: #FFF0EE;
-  border: 1px solid #FFCDD2;
-  border-radius: var(--r);
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--danger);
-  margin-bottom: 14px;
-}
-
-.onboard-success {
-  text-align: center;
-  padding: 16px 0;
-}
-
-.onboard-success-icon {
-  width: 56px; height: 56px;
-  border-radius: 50%;
-  background: #EDF7F2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto 16px;
-  font-size: 24px;
-}
-
-.category-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.category-card {
-  border: 1.5px solid var(--mist2);
-  border-radius: var(--r);
-  padding: 14px;
-  cursor: pointer;
-  transition: all .15s;
-  text-align: center;
-}
-
-.category-card:hover { border-color: var(--navy2); background: var(--mist); }
-.category-card.selected { border-color: var(--navy); background: #EEF4F8; }
-
-.category-card-icon { font-size: 22px; margin-bottom: 6px; }
-.category-card-label { font-size: 13px; font-weight: 500; color: var(--text); }
-.category-card-sub { font-size: 11px; color: var(--sub); margin-top: 2px; }
-
-
-
-.onboard-step-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 32px;
-}
-
-.onboard-step-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--mist2);
-}
-
-.onboard-step-dot.done { background: var(--success); }
-.onboard-step-dot.active { background: var(--navy); width: 24px; border-radius: 4px; }
-
-.onboard-heading {
-  font-family: var(--fh);
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 8px;
-}
-
-.onboard-sub {
-  font-size: 15px;
-  color: var(--sub);
-  line-height: 1.6;
-  margin-bottom: 28px;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 18px;
-}
-
-.form-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--sub);
-  text-transform: uppercase;
-  letter-spacing: .6px;
-}
-
-.form-input {
-  font-family: var(--fb);
-  font-size: 15px;
-  padding: 11px 14px;
-  border: 1.5px solid var(--mist2);
-  border-radius: var(--r);
-  outline: none;
-  transition: border-color .15s;
-  color: var(--text);
-  background: #fff;
-}
-
-.form-input:focus { border-color: var(--navy2); }
-
-.form-hint {
-  font-size: 12px;
-  color: var(--sub);
-  margin-top: -10px;
-}
-
-.btn-primary {
-  background: var(--navy);
-  color: #fff;
-  font-family: var(--fb);
-  font-size: 15px;
-  font-weight: 500;
-  padding: 11px 22px;
-  border: none;
-  border-radius: var(--r);
-  cursor: pointer;
-  transition: background .15s;
-}
-
-.btn-primary:hover { background: var(--navy2); }
-.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
-
-.btn-secondary {
-  background: var(--mist);
-  color: var(--text);
-  font-family: var(--fb);
-  font-size: 15px;
-  font-weight: 500;
-  padding: 11px 22px;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  cursor: pointer;
-  transition: background .15s;
-}
-
-.btn-secondary:hover { background: var(--mist2); }
-
-/* ── Site plan ───────────────────────────────────────────────────────────── */
-.sp-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
-.sp-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.sp-btn { display: inline-flex; align-items: center; gap: 6px; font-family: var(--fb); font-size: 12px; font-weight: 500; padding: 6px 12px; border-radius: 7px; border: 1.5px solid var(--border); background: #fff; color: var(--text); cursor: pointer; transition: all .15s; }
-.sp-btn:hover { border-color: var(--navy2); color: var(--navy); }
-.sp-btn.active { background: var(--navy); color: #fff; border-color: var(--navy); }
-.sp-btn-primary { background: var(--gold); color: var(--navy); border-color: var(--gold); font-weight: 600; }
-.sp-btn-primary:hover { background: var(--gold2); border-color: var(--gold2); }
-.sp-btn-navy { background: var(--navy); color: #fff; border-color: var(--navy); }
-.sp-btn-navy:hover { background: var(--navy2); }
-.sp-btn-danger { background: #FFF0EE; color: var(--danger); border-color: #FFCDD2; }
-.sp-btn-danger:hover { background: #FFE0DC; }
-
-.sp-area { margin-bottom: 24px; }
-.sp-area-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px solid var(--gold); }
-.sp-area-title { font-family: var(--fh); font-size: 16px; font-weight: 700; color: var(--navy); }
-.sp-area-count { font-size: 11px; color: var(--sub); font-weight: 500; background: var(--mist); border: 1px solid var(--mist2); border-radius: 20px; padding: 2px 8px; margin-left: 8px; }
-.sp-area-actions { display: flex; align-items: center; gap: 6px; }
-.sp-drag-handle { cursor: grab; color: var(--sub); font-size: 16px; padding: 0 4px; opacity: 0.5; }
-.sp-drag-handle:hover { opacity: 1; }
-
-.ug { display: flex; flex-wrap: wrap; gap: 7px; }
-.uc { border-radius: 8px; padding: 9px 12px; min-width: 105px; cursor: pointer; border: 2px solid transparent; transition: all .17s; position: relative; }
-.uc:hover { transform: translateY(-2px); box-shadow: var(--sh); }
-.uc.sel { outline: 2.5px solid var(--gold); outline-offset: 2px; }
-.uc-occ { background: #EBF5F0; border-color: #BDE5D3; }
-.uc-arr { background: #FFF3E0; border-color: #FFCC80; }
-.uc-lea { background: #FFF0EE; border-color: #FFCDD2; }
-.uc-new { background: #FFFDE7; border-color: #FFF176; }
-.uc-pen { background: #F3E5F5; border-color: #CE93D8; }
-.uc-avl { background: #E3F2FD; border-color: #90CAF9; }
-.uid { font-family: var(--fh); font-size: 12px; font-weight: 700; color: var(--navy); }
-.uten { font-size: 10px; color: var(--sub); margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 110px; }
-.uprice { font-size: 10px; font-weight: 600; color: var(--navy); margin-top: 2px; }
-.udot { width: 6px; height: 6px; border-radius: 50%; position: absolute; top: 7px; right: 7px; }
-.d-occ { background: #1A7F5A; } .d-arr { background: #E65100; } .d-lea { background: #C0392B; }
-.d-new { background: #F9A825; } .d-pen { background: #AB47BC; } .d-avl { background: #1565C0; }
-
-.sp-legend { display: flex; gap: 12px; flex-wrap: wrap; }
-.sp-legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--sub); }
-.sp-legend-dot { width: 9px; height: 9px; border-radius: 3px; }
-
-.sp-detail { background: #fff; border: 1px solid var(--border); border-radius: var(--r2); padding: 18px 22px; margin-top: 14px; box-shadow: var(--sh); }
-.sp-detail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.sp-detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.sp-detail-label { font-size: 10px; color: var(--sub); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
-.sp-detail-val { font-size: 13px; font-weight: 600; color: var(--navy); margin-top: 2px; word-break: break-all; }
-
-.sp-form { background: var(--mist); border: 1.5px dashed var(--mist2); border-radius: var(--r); padding: 18px 20px; margin-top: 16px; }
-.sp-form-title { font-family: var(--fh); font-size: 13px; font-weight: 700; color: var(--navy); margin-bottom: 14px; }
-.sp-form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-.sp-field { display: flex; flex-direction: column; gap: 4px; }
-.sp-field label { font-size: 10px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: .5px; }
-.sp-field input, .sp-field select { font-family: var(--fb); font-size: 13px; padding: 7px 10px; border: 1.5px solid var(--mist2); border-radius: 6px; outline: none; width: 100%; background: #fff; color: var(--text); }
-.sp-field input:focus, .sp-field select:focus { border-color: var(--navy2); }
-
-/* ── Edit Modal ──────────────────────────────────────────────────────────── */
-.modal-ov { position: fixed; inset: 0; background: rgba(11,30,61,.55); z-index: 200; display: flex; align-items: center; justify-content: center; animation: fi .15s; padding: 20px; }
-.modal { background: #fff; border-radius: 14px; width: 580px; max-width: 100%; box-shadow: var(--shl); max-height: 90vh; overflow-y: auto; animation: su .2s; }
-.modal-header { padding: 20px 22px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-.modal-title { font-family: var(--fh); font-size: 16px; font-weight: 700; color: var(--navy); }
-.modal-close { background: var(--mist); border: none; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; color: var(--sub); }
-.modal-body { padding: 20px 22px; }
-.modal-footer { padding: 14px 22px; display: flex; gap: 9px; justify-content: flex-end; border-top: 1px solid var(--border); }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.form-grid-item { display: flex; flex-direction: column; gap: 4px; }
-.form-grid-item.full { grid-column: span 2; }
-.form-grid-item label { font-size: 11px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: .5px; }
-.form-grid-item input, .form-grid-item select, .form-grid-item textarea { font-family: var(--fb); font-size: 13px; padding: 8px 11px; border: 1.5px solid var(--mist2); border-radius: 7px; outline: none; width: 100%; color: var(--text); }
-.form-grid-item input:focus, .form-grid-item select:focus, .form-grid-item textarea:focus { border-color: var(--gold); }
-.form-grid-item textarea { resize: vertical; min-height: 60px; }
-.form-section-label { font-size: 12px; font-weight: 700; color: var(--navy); border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; grid-column: span 2; }
-.modal-btn { display: inline-flex; align-items: center; gap: 6px; font-family: var(--fb); font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 7px; border: none; cursor: pointer; transition: all .15s; }
-.modal-btn-primary { background: var(--gold); color: var(--navy); }
-.modal-btn-primary:hover { background: var(--gold2); }
-.modal-btn-outline { background: transparent; color: var(--navy); border: 1.5px solid var(--border); }
-.modal-btn-outline:hover { border-color: var(--navy2); }
-.modal-btn-danger { background: #FFF0EE; color: var(--danger); border: 1.5px solid #FFCDD2; }
-.modal-btn-archive { background: #FFF8E6; color: var(--warning); border: 1.5px solid #FFE0A0; }
-.modal-btn:disabled { opacity: .5; cursor: not-allowed; }
-.unsaved-badge { font-size: 11px; color: var(--gold); font-weight: 600; }
-
-@keyframes fi { from { opacity: 0; } to { opacity: 1; } }
-@keyframes su { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.items-center { align-items: center; }
-.justify-between { justify-content: space-between; }
-.gap-2 { gap: 8px; }
-.gap-3 { gap: 12px; }
-.gap-4 { gap: 16px; }
-.mb-1 { margin-bottom: 4px; }
-.mb-2 { margin-bottom: 8px; }
-.mb-3 { margin-bottom: 12px; }
-.mb-4 { margin-bottom: 16px; }
-.mb-6 { margin-bottom: 24px; }
-.mt-2 { margin-top: 8px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
-
-/* ── Overlay / sidebar backdrop ──────────────────────────────────────────── */
-.backdrop {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.35);
-  z-index: 90;
-}
-
-.backdrop.open { display: block; }
-
-/* ── Toast ───────────────────────────────────────────────────────────────── */
-.toast-wrap {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 999;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.toast {
-  background: var(--text);
-  color: #fff;
-  font-size: 13px;
-  padding: 10px 16px;
-  border-radius: var(--r);
-  box-shadow: var(--shl);
-  animation: slideUp .2s ease;
-  max-width: 320px;
-}
-
-.toast.success { background: var(--success); }
-.toast.error { background: var(--danger); }
-
-@keyframes slideUp {
-  from { transform: translateY(12px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-/* ── Table ───────────────────────────────────────────────────────────────── */
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-
-.data-table th {
-  text-align: left;
-  padding: 10px 14px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  color: var(--sub);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.data-table td {
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  vertical-align: middle;
-}
-
-.data-table tr:last-child td { border-bottom: none; }
-
-.data-table tbody tr {
-  transition: background .1s;
-  cursor: pointer;
-}
-
-.data-table tbody tr:hover { background: var(--mist); }
+// ─── Seed data ────────────────────────────────────────────────────────────────
+
+const PC={occupied:"p-occ",arrears:"p-arr",leaving:"p-lea",new:"p-new",pending:"p-pen",available:"p-avl"};
+const UC={occupied:"uc-occ",arrears:"uc-arr",leaving:"uc-lea",new:"uc-new",pending:"uc-pen",available:"uc-avl"};
+const DC={occupied:"d-occ",arrears:"d-arr",leaving:"d-lea",new:"d-new",pending:"d-pen",available:"d-avl"};
+const SL={occupied:"Occupied",arrears:"In Arrears",leaving:"Leaving",new:"New Customer",pending:"Pending",available:"Available"};
+const STATUSES=["occupied","arrears","leaving","new","pending","available"];
+const PAYMENTS=["Monthly DD","Stripe","SO","Pays Manually","DD","—","Other"];
+
+const CSS=`
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --navy:#1A4F72;--gold:#C9A84C;--gold2:#E8C472;--white:#fff;--mist:#EEF2F7;
+  --text:#0B1E3D;--sub:#5A6E8A;--success:#1A7F5A;--danger:#C0392B;
+  --fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;
+  --r:10px;--sh:0 4px 24px rgba(11,30,61,.10);--shl:0 12px 48px rgba(11,30,61,.16)
+}
+body{font-family:var(--fb);background:var(--mist);color:var(--text)}
+
+/* ── Login ── */
+.login-page{min-height:100vh;background:var(--navy);display:flex;align-items:center;justify-content:center;padding:20px}
+.login-box{background:#fff;border-radius:16px;padding:40px;width:100%;max-width:420px;box-shadow:var(--shl)}
+.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px;justify-content:center}
+.login-logotext{font-family:'Georgia',serif;font-size:24px;font-weight:700;color:var(--navy)}
+.login-sub{text-align:center;color:var(--sub);font-size:13px;margin-bottom:24px;margin-top:-16px}
+.login-field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.login-field label{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.5px}
+.login-field input{font-family:var(--fb);font-size:14px;padding:10px 13px;border:1.5px solid #D0DAE8;border-radius:8px;outline:none;width:100%}
+.login-field input:focus{border-color:var(--navy)}
+.login-btn{width:100%;background:var(--navy);color:#fff;font-family:var(--fb);font-size:14px;font-weight:600;padding:11px;border:none;border-radius:8px;cursor:pointer;margin-top:6px;transition:background .15s}
+.login-btn:hover{background:#123a54}
+.login-btn:disabled{opacity:.6;cursor:not-allowed}
+.login-err{background:#FFF0EE;border:1px solid #FFCDD2;border-radius:7px;padding:10px 13px;font-size:13px;color:var(--danger);margin-bottom:12px}
+.login-mfa{background:#EEF8FF;border:1px solid #BDE0F5;border-radius:8px;padding:14px;margin-bottom:14px;font-size:13px;color:var(--navy);text-align:center}
+
+/* ── App shell ── */
+.app{display:flex;min-height:100vh}
+.sidebar{width:240px;min-height:100vh;background:var(--navy);display:flex;flex-direction:column;position:fixed;top:0;left:0;z-index:100;transition:transform 0.25s ease}
+.logo-wrap{padding:18px 16px 16px;border-bottom:1px solid rgba(255,255,255,.12);flex-shrink:0}
+.logo-row{display:flex;align-items:center;gap:10px}
+.logo-shield{width:36px;height:36px;flex-shrink:0}
+.logo-mark{font-family:'Georgia',serif;font-size:19px;font-weight:700;color:#fff;white-space:nowrap;line-height:1.2}
+.logo-sub{font-size:9px;color:rgba(255,255,255,.45);letter-spacing:1.5px;text-transform:uppercase;margin-top:4px;padding-left:46px}
+.snav{flex:1;padding:14px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.ns{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.3);padding:10px 10px 5px}
+.ni{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:7px;color:rgba(255,255,255,.6);font-size:13px;font-weight:500;cursor:pointer;border:none;background:transparent;width:100%;text-align:left;transition:all .15s}
+.ni:hover{background:rgba(201,168,76,.12);color:var(--gold2)}
+.ni.active{background:rgba(201,168,76,.18);color:var(--gold);font-weight:600}
+.nicon{font-size:15px;width:18px;text-align:center}
+.sfooter{padding:14px 16px;border-top:1px solid rgba(201,168,76,.12)}
+.urow{display:flex;align-items:center;gap:9px}
+.uav{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--gold2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:var(--navy);flex-shrink:0}
+.uname{font-size:12px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
+.urole{font-size:10px;color:rgba(255,255,255,.4)}
+.signout-btn{background:none;border:none;color:rgba(255,255,255,.4);font-size:11px;cursor:pointer;padding:0;margin-top:2px;text-align:left}
+.signout-btn:hover{color:rgba(255,255,255,.8)}
+.main{margin-left:240px;flex:1;display:flex;flex-direction:column}
+.topbar{background:#fff;border-bottom:1px solid #E4EAF2;padding:0 28px;height:60px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.topbar-title{font-family:var(--fh);font-size:18px;font-weight:700;color:var(--navy)}
+.hamburger{display:none;background:none;border:none;cursor:pointer;padding:8px;color:var(--navy);font-size:22px;line-height:1}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:99}
+.tag{font-size:11px;background:var(--mist);border:1px solid #D8E2EE;border-radius:20px;padding:3px 10px;color:var(--sub);font-weight:500}
+.content{padding:28px;flex:1}
+@media(max-width:768px){
+.sidebar{transform:translateX(-240px)}
+.sidebar.mobile-open{transform:translateX(0)}
+.sidebar-overlay.active{display:block}
+.main{margin-left:0}
+.hamburger{display:flex;align-items:center;justify-content:center}
+.content{padding:14px}
+.topbar{padding:0 14px;height:54px}
+.topbar-title{font-size:15px}
+.kg{grid-template-columns:1fr 1fr!important;gap:10px}
+.kv{font-size:22px}
+.g2{grid-template-columns:1fr!important}
+.fg{grid-template-columns:1fr!important}
+.fgi.full{grid-column:span 1!important}
+.modal{width:98vw!important;max-width:98vw!important;margin:4px auto}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.btn{padding:9px 14px;font-size:13px;min-height:40px}
+.btn-sm{padding:7px 11px;font-size:12px;min-height:36px}
+.add-row-grid{grid-template-columns:1fr!important}
+.ug{grid-template-columns:repeat(auto-fill,minmax(85px,1fr))!important}
+.dpanel{padding:12px}
+.dgrid{grid-template-columns:1fr 1fr!important}
+.sin{font-size:16px}
+.invite-box{padding:14px}
+.card{border-radius:10px}
+}
+
+/* ── Cards ── */
+.card{background:#fff;border-radius:var(--r);box-shadow:var(--sh);border:1px solid #E4EAF2;margin-bottom:18px}
+.ch{padding:18px 22px 0;display:flex;align-items:center;justify-content:space-between}
+.ct{font-family:var(--fh);font-size:14px;font-weight:700;color:var(--navy)}
+.cb{padding:18px 22px 22px}
+.kg{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.kc{background:#fff;border-radius:var(--r);padding:20px 22px;border:1px solid #E4EAF2;box-shadow:var(--sh);position:relative;overflow:hidden}
+.kc::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold),var(--gold2))}
+.kl{font-size:12px;text-transform:uppercase;letter-spacing:0.8px;color:var(--sub);font-weight:600;margin-bottom:8px}
+.kv{font-family:var(--fb);font-size:30px;font-weight:700;color:var(--navy);line-height:1;letter-spacing:-0.5px}
+.ks{font-size:12px;margin-top:7px;color:var(--sub);font-weight:500}
+.ki{position:absolute;top:16px;right:16px;font-size:20px;opacity:.12}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-bottom:18px}
+.sp2{grid-column:span 2}
+
+/* ── Table ── */
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--sub);font-weight:600;padding:9px 13px;text-align:left;background:var(--mist);border-bottom:1px solid #E4EAF2;white-space:nowrap}
+td{padding:10px 13px;font-size:13px;border-bottom:1px solid #F0F4FA;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#FAFCFF}
+.tw{overflow-x:auto}
+
+/* ── Pills ── */
+.pill{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.p-occ{background:#EBF5F0;color:#1A7F5A}.p-arr{background:#FFF3E0;color:#E65100}
+.p-lea{background:#FFF0EE;color:#C0392B}.p-new{background:#FFFDE7;color:#7B6000}
+.p-pen{background:#F3E5F5;color:#7B1FA2}.p-avl{background:#E3F2FD;color:#1565C0}
+
+/* ── Buttons ── */
+.btn{display:inline-flex;align-items:center;gap:6px;font-family:var(--fb);font-size:13px;font-weight:600;padding:7px 14px;border-radius:7px;border:none;cursor:pointer;transition:all .15s}
+.btn-primary{background:var(--gold);color:var(--navy)}.btn-primary:hover{background:var(--gold2)}
+.btn-outline{background:transparent;color:var(--navy);border:1.5px solid #D0DAE8}.btn-outline:hover{border-color:var(--gold);color:var(--gold)}
+.btn-sm{font-size:12px;padding:5px 11px}
+.btn-navy{background:var(--navy);color:#fff}.btn-navy:hover{background:#123a54}
+.btn-danger{background:#FFF0EE;color:var(--danger);border:1.5px solid #FFCDD2}
+.btn-success{background:#EBF5F0;color:var(--success);border:1.5px solid #BDE5D3}
+.chip{display:inline-flex;background:var(--mist);border:1px solid #D8E2EE;border-radius:5px;font-size:11px;padding:2px 7px;color:var(--sub);font-weight:500}
+.fr{display:flex;align-items:center;gap:8px}
+.fb{display:flex;align-items:center;justify-content:space-between}
+.mb16{margin-bottom:16px}.mb20{margin-bottom:20px}
+.tsub{color:var(--sub)}.tsm{font-size:12px}
+
+/* ── Site plan ── */
+.ug{display:flex;flex-wrap:wrap;gap:7px}
+.uc{border-radius:7px;padding:8px 11px;min-width:100px;cursor:pointer;border:2px solid transparent;transition:all .17s;position:relative}
+.uc:hover{transform:translateY(-2px);box-shadow:var(--sh)}
+.uc.sel{outline:2px solid var(--gold);outline-offset:2px}
+.uc-occ{background:#EBF5F0;border-color:#BDE5D3}.uc-arr{background:#FFF3E0;border-color:#FFCC80}
+.uc-lea{background:#FFF0EE;border-color:#FFCDD2}.uc-new{background:#FFFDE7;border-color:#FFF176}
+.uc-pen{background:#F3E5F5;border-color:#CE93D8}.uc-avl{background:#E3F2FD;border-color:#90CAF9}
+.uid{font-family:var(--fh);font-size:12px;font-weight:700;color:var(--navy)}
+.uten{font-size:10px;color:var(--sub);margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:110px}
+.uprice{font-size:10px;font-weight:600;color:var(--navy);margin-top:2px}
+.udot{width:6px;height:6px;border-radius:50%;position:absolute;top:7px;right:7px}
+.d-occ{background:#1A7F5A}.d-arr{background:#E65100}.d-lea{background:#C0392B}
+.d-new{background:#F9A825}.d-pen{background:#AB47BC}.d-avl{background:#1565C0}
+.slabel{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;margin-top:18px;padding:4px 9px;background:var(--mist);border-radius:5px;display:inline-block}
+.legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.li{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--sub)}
+.ld{width:9px;height:9px;border-radius:3px}
+.dpanel{background:#fff;border:1px solid #E4EAF2;border-radius:var(--r);padding:18px 22px;margin-top:14px;box-shadow:var(--sh)}
+.dgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.dlabel{font-size:10px;color:var(--sub);font-weight:600;text-transform:uppercase}
+.dval{font-size:13px;font-weight:600;color:var(--navy);margin-top:2px;word-break:break-all}
+
+/* ── Add row form ── */
+.add-row-form{background:#F8FAFC;border:1.5px dashed #C9D8E8;border-radius:10px;padding:18px 20px;margin-top:18px}
+.add-row-title{font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);margin-bottom:14px}
+.add-row-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+.arf{display:flex;flex-direction:column;gap:4px}
+.arf label{font-size:10px;font-weight:600;color:var(--sub);text-transform:uppercase}
+.arf input,.arf select{font-family:var(--fb);font-size:13px;padding:7px 10px;border:1.5px solid #D0DAE8;border-radius:6px;outline:none;width:100%}
+.arf input:focus,.arf select:focus{border-color:var(--navy)}
+
+/* ── Misc ── */
+.sin{font-family:var(--fb);font-size:13px;padding:7px 12px;border:1.5px solid #D0DAE8;border-radius:7px;outline:none}
+.sin:focus{border-color:var(--gold)}
+.sinw{width:260px}
+.pb{height:6px;background:#E4EAF2;border-radius:99px;overflow:hidden}
+.pbf{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--gold),var(--gold2))}
+.divider{height:1px;background:#E4EAF2;margin:14px 0}
+.al-o{padding:10px 14px;background:#FFF3E0;border:1.5px solid #FFCC80;border-radius:8px;font-size:13px;margin-bottom:8px}
+.al-r{padding:10px 14px;background:#FFF0EE;border:1.5px solid #FFCDD2;border-radius:8px;font-size:13px;margin-bottom:8px}
+
+/* ── Modal ── */
+.modal-ov{position:fixed;inset:0;background:rgba(11,30,61,.55);z-index:200;display:flex;align-items:center;justify-content:center;animation:fi .15s}
+.modal{background:#fff;border-radius:14px;width:560px;max-width:95vw;box-shadow:var(--shl);max-height:90vh;overflow-y:auto;animation:su .2s}
+.mh{padding:20px 22px 16px;border-bottom:1px solid #E4EAF2;display:flex;justify-content:space-between;align-items:center}
+.mt{font-family:var(--fh);font-size:16px;font-weight:700;color:var(--navy)}
+.mc{background:var(--mist);border:none;border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;color:var(--sub)}
+.mb-m{padding:20px 22px}
+.mf{padding:14px 22px 20px;display:flex;gap:9px;justify-content:flex-end;border-top:1px solid #E4EAF2}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fgi{display:flex;flex-direction:column;gap:4px}
+.fgi.full{grid-column:span 2}
+.fgi label{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.5px}
+.fgi input,.fgi select,.fgi textarea{font-family:var(--fb);font-size:13px;padding:8px 11px;border:1.5px solid #D0DAE8;border-radius:7px;outline:none;width:100%}
+.fgi input:focus,.fgi select:focus,.fgi textarea:focus{border-color:var(--gold)}
+.fgi textarea{resize:vertical;min-height:60px}
+
+/* ── Users page ── */
+.user-card{background:#fff;border:1px solid #E4EAF2;border-radius:9px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.user-info-block .uemail{font-weight:600;font-size:14px;color:var(--navy)}
+.user-info-block .umeta{font-size:12px;color:var(--sub);margin-top:2px}
+.invite-box{background:#F8FAFC;border:1.5px dashed #C9D8E8;border-radius:10px;padding:20px;margin-top:20px}
+.invite-title{font-family:var(--fh);font-weight:700;font-size:14px;color:var(--navy);margin-bottom:12px}
+.invite-row{display:flex;gap:10px;align-items:flex-end}
+.mfa-note{background:#EEF8FF;border:1px solid #BDE0F5;border-radius:8px;padding:12px 16px;font-size:13px;color:var(--navy);margin-bottom:16px}
+
+.toast{position:fixed;bottom:22px;right:22px;z-index:300;background:var(--navy);color:#fff;padding:12px 18px;border-radius:9px;font-size:13px;font-weight:500;box-shadow:var(--shl);border-left:4px solid var(--gold);animation:su .2s}
+.doc-item{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid #F0F4FA;transition:background .1s}
+.doc-item:hover{background:#FAFCFF}
+.doc-item:last-child{border-bottom:none}
+.doc-icon{font-size:22px;flex-shrink:0}
+.doc-info{flex:1;min-width:0}
+.doc-name{font-size:13px;font-weight:600;color:var(--navy);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-meta{font-size:11px;color:var(--sub);margin-top:2px}
+.doc-actions{display:flex;gap:6px;flex-shrink:0}
+.upload-zone{border:2px dashed #C9D8E8;border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:all .15s;background:#F8FAFC}
+.upload-zone:hover,.upload-zone.drag-over{border-color:var(--gold);background:#FFFDF5}
+.upload-zone input{display:none}
+.loading{display:flex;align-items:center;justify-content:center;height:200px;color:var(--sub);font-size:14px}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+@keyframes su{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 `;
 
-// ─── Icons (inline SVG) ───────────────────────────────────────────────────
-const Icon = {
-  dashboard: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
-  tenants:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
-  siteplan:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>,
-  payments:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><path d="M1 10h22"/></svg>,
-  documents: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
-  crm:       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
-  archive:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>,
-  settings:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
-  users:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
-  signout:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
-  menu:      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
-};
+// ─── Small components ─────────────────────────────────────────────────────────
+function Pill({s}){return <span className={`pill ${PC[s]||"p-occ"}`}>{SL[s]||s}</span>;}
 
-// ─── Toast ────────────────────────────────────────────────────────────────
-function useToast() {
-  const [toasts, setToasts] = useState([]);
-  const toast = useCallback((msg, type = "info") => {
-    const id = Date.now();
-    setToasts(t => [...t, { id, msg, type }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
-  }, []);
-  return { toasts, toast };
-}
-
-// ─── Login Page ───────────────────────────────────────────────────────────
-function QRImage({ svgString }) {
-  const [src, setSrc] = useState(null);
-  useEffect(() => {
-    if (!svgString) return;
-    try {
-      const svg = svgString.startsWith("<svg") || svgString.startsWith("<?xml") ? svgString : `<svg>${svgString}</svg>`;
-      const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = 200; canvas.height = 200;
-        const ctx = canvas.getContext("2d");
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, 200, 200);
-        ctx.drawImage(img, 0, 0, 200, 200);
-        setSrc(canvas.toDataURL("image/png"));
-        URL.revokeObjectURL(url);
-      };
-      img.src = url;
-    } catch {}
-  }, [svgString]);
-  if (!src) return <div style={{ width: 200, height: 200, background: "#f5f5f5", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 12 }}>Loading QR…</div>;
-  return (
-    <div style={{ textAlign: "center" }}>
-      <img src={src} alt="MFA QR Code" style={{ width: 200, height: 200, border: "2px solid var(--mist2)", borderRadius: 8, imageRendering: "pixelated" }} />
-      <div style={{ marginTop: 8 }}>
-        <a href={src} download="cerect-mfa-qr.png" style={{ fontSize: 12, color: "var(--navy)" }}>⬇️ Download QR Code</a>
-      </div>
-    </div>
-  );
-}
-
-function LoginPage({ onLogin }) {
-  const [step, setStep] = useState("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [session, setSession] = useState(null);
-  const [factorId, setFactorId] = useState(null);
-  const [challengeId, setChallengeId] = useState(null);
-  const [qrCode, setQrCode] = useState(null);
-  const [secret, setSecret] = useState(null);
-
-  async function handleLogin(e) {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      const sess = await signIn(email, password);
-      if (sess.error) throw new Error(sess.error_description || sess.msg || "Login failed");
-      setSession(sess);
-      const factors = await mfaListFactors(sess.access_token);
-      const totpFactors = Array.isArray(factors) ? factors.filter(f => f.factor_type === "totp" && f.status === "verified") : [];
-      if (totpFactors.length > 0) {
-        const f = totpFactors[0];
-        setFactorId(f.id);
-        const ch = await mfaChallenge(f.id, sess.access_token);
-        setChallengeId(ch.id);
-        setStep("mfa-verify");
-      } else {
-        setStep("mfa-setup");
-      }
-    } catch (err) {
-      setError(err.message || "Invalid email or password");
-    }
-    setLoading(false);
-  }
-
-  async function handleForgotPassword(e) {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      await resetPassword(email);
-      setStep("forgot-sent");
-    } catch {
-      setError("Could not send reset email — please try again");
-    }
-    setLoading(false);
-  }
-
-  async function handleSetupMFA() {
-    setLoading(true); setError("");
-    try {
-      const enroll = await mfaEnroll(session.access_token);
-      if (enroll.error || enroll.msg) throw new Error(enroll.error_description || enroll.msg || "Enrolment failed");
-      if (enroll.id) {
-        setFactorId(enroll.id);
-        setQrCode(enroll.totp?.qr_code);
-        setSecret(enroll.totp?.secret);
-        const ch = await mfaChallenge(enroll.id, session.access_token);
-        setChallengeId(ch.id);
-        setStep("mfa-enroll");
-      } else {
-        throw new Error("No factor ID returned");
-      }
-    } catch (err) {
-      setError("Could not set up MFA: " + err.message);
-    }
-    setLoading(false);
-  }
-
-  async function handleVerifyMFA(e) {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      const result = await mfaVerify(factorId, challengeId, code.replace(/\s/g, ""), session.access_token);
-      if (result.access_token) {
-        onLogin({ ...session, access_token: result.access_token });
-      } else {
-        setError("Incorrect code — please try again");
-        const ch = await mfaChallenge(factorId, session.access_token);
-        setChallengeId(ch.id);
-      }
-    } catch { setError("Verification failed — please try again"); }
-    setLoading(false);
-    setCode("");
-  }
-
-  async function skipMFA() { onLogin(session); }
-
-  return (
-    <div className="login-page">
-      <div className="login-brand">
-        <ShieldLogo size={56} />
-        <div style={{ fontFamily: "var(--fh)", fontSize: 32, fontWeight: 800, color: "#fff", marginTop: 16, marginBottom: 8 }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
-        <div style={{ fontSize: 15, color: "rgba(255,255,255,0.7)", maxWidth: 280, lineHeight: 1.6 }}>Property & Storage Management Platform</div>
-      </div>
-      <div className="login-box">
-        <div className="login-logo" style={{ flexDirection: "column", gap: 8 }}>
-          <ShieldLogo size={52} />
-          <div className="login-logotext" style={{ color: "var(--navy)" }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
-        </div>
-
-        {step === "login" && (<>
-          <p className="login-sub">Management Platform — Sign in to continue</p>
-          {error && <div className="login-err">{error}</div>}
-          <form onSubmit={handleLogin}>
-            <div className="login-field"><label>Email Address</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus /></div>
-            <div className="login-field"><label>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••••" required /></div>
-            <button className="login-btn" type="submit" disabled={loading}>{loading ? "Signing in…" : "Sign In"}</button>
-          </form>
-          <button onClick={() => { setStep("forgot"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "10px", marginTop: 4 }}>Forgot your password?</button>
-        </>)}
-
-        {step === "forgot" && (<>
-          <p className="login-sub">Reset your password</p>
-          {error && <div className="login-err">{error}</div>}
-          <form onSubmit={handleForgotPassword}>
-            <div className="login-field"><label>Email Address</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus /></div>
-            <button className="login-btn" type="submit" disabled={loading}>{loading ? "Sending…" : "Send Reset Link"}</button>
-          </form>
-          <button onClick={() => { setStep("login"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "10px", marginTop: 4 }}>Back to login</button>
-        </>)}
-
-        {step === "forgot-sent" && (<>
-          <div style={{ textAlign: "center", padding: "20px 0" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📧</div>
-            <h3 style={{ color: "var(--navy)", fontFamily: "var(--fh)", marginBottom: 8 }}>Check your inbox</h3>
-            <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 20 }}>We sent a reset link to <strong>{email}</strong>.</p>
-          </div>
-          <button className="login-btn" onClick={() => { setStep("login"); setError(""); }}>Back to Login</button>
-        </>)}
-
-        {step === "mfa-setup" && (<>
-          <p className="login-sub">One more step — secure your account</p>
-          <div style={{ background: "#EEF8FF", border: "1.5px solid #BDE0F5", borderRadius: 9, padding: 16, marginBottom: 16, fontSize: 13, color: "var(--navy)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>🔐 Set up two-factor authentication</div>
-            <p style={{ fontSize: 12, color: "var(--sub)", margin: "0 0 8px" }}>You'll be asked for a 6-digit code from an app on your phone each time you log in.</p>
-            <p style={{ fontSize: 12, color: "var(--sub)", margin: 0 }}><strong>You'll need:</strong> Google Authenticator or Authy (both free).</p>
-          </div>
-          {error && <div className="login-err">{error}</div>}
-          <button className="login-btn" onClick={handleSetupMFA} disabled={loading} style={{ marginBottom: 16 }}>{loading ? "Setting up…" : "Set Up Authenticator App →"}</button>
-          <div style={{ borderTop: "1px solid var(--mist2)", paddingTop: 12, textAlign: "center" }}>
-            <p style={{ fontSize: 11, color: "var(--sub)", marginBottom: 6 }}>Not ready? You can set this up later from the Users page.</p>
-            <button onClick={skipMFA} style={{ background: "none", border: "1px solid var(--mist2)", borderRadius: 6, color: "var(--sub)", fontSize: 11, cursor: "pointer", padding: "5px 12px" }}>Skip for now</button>
-          </div>
-        </>)}
-
-        {step === "mfa-enroll" && (<>
-          <p className="login-sub">Scan this QR code with your authenticator app</p>
-          {error && <div className="login-err">{error}</div>}
-          {qrCode && <div style={{ margin: "16px 0" }}><QRImage svgString={qrCode} /></div>}
-          {secret && (
-            <div style={{ background: "var(--mist)", borderRadius: 7, padding: "8px 12px", marginBottom: 14, fontSize: 11, color: "var(--sub)", textAlign: "center" }}>
-              Cannot scan? Enter manually:<br /><strong style={{ fontSize: 13, letterSpacing: 2, color: "var(--navy)" }}>{secret}</strong>
-            </div>
-          )}
-          <form onSubmit={handleVerifyMFA}>
-            <div className="login-field"><label>Enter 6-digit code from your app</label><input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e => setCode(e.target.value)} placeholder="000000" autoFocus style={{ textAlign: "center", letterSpacing: 4, fontSize: 20 }} /></div>
-            <button className="login-btn" type="submit" disabled={loading || code.replace(/\s/g, "").length < 6}>{loading ? "Verifying…" : "Verify & Enable MFA"}</button>
-          </form>
-        </>)}
-
-        {step === "mfa-verify" && (<>
-          <p className="login-sub">Enter the 6-digit code from your authenticator app</p>
-          {error && <div className="login-err">{error}</div>}
-          <form onSubmit={handleVerifyMFA}>
-            <div className="login-field"><label>Authentication Code</label><input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e => setCode(e.target.value)} placeholder="000000" autoFocus style={{ textAlign: "center", letterSpacing: 4, fontSize: 20 }} /></div>
-            <button className="login-btn" type="submit" disabled={loading || code.replace(/\s/g, "").length < 6}>{loading ? "Verifying…" : "Verify"}</button>
-          </form>
-          <button onClick={() => { setStep("forgot"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "8px", marginTop: 4 }}>Forgot password?</button>
-          <button onClick={() => { setStep("login"); setCode(""); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "4px" }}>Back to login</button>
-        </>)}
-      </div>
-    </div>
-  );
-}
-
-// ─── Placeholder page ─────────────────────────────────────────────────────
-function ComingSoon({ title, icon }) {
-  return (
-    <div className="coming-soon">
-      <svg className="coming-soon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">{icon}</svg>
-      <div className="coming-soon-title">{title}</div>
-      <div className="coming-soon-sub">This section is coming soon.</div>
-    </div>
-  );
-}
-
-// ─── Small shared components ──────────────────────────────────────────────────
-function Pill({ s }) {
-  const cls = { occupied: "pill-occupied", arrears: "pill-arrears", leaving: "pill-leaving", new: "pill-new", pending: "pill-pending", available: "pill-available" };
-  return <span className={`pill ${cls[s] || "pill-occupied"}`}>{SL[s] || s}</span>;
-}
-
-function UCell({ u, sel, onClick }) {
-  const isVacant = u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant);
-  return (
-    <div
-      className={`uc ${UC[u.status] || "uc-avl"} ${sel ? "sel" : ""}`}
-      onClick={onClick}
-      title={isVacant ? `Unit ${u.id} — click to add tenant` : u.tenant || u.id}
-    >
-      <div className={`udot ${DC[u.status] || "d-avl"}`} />
+function UCell({u,sel,onClick}){
+  const isVacant=u.status==="available"||u.status==="vacant"||(!u.status&&!u.tenant);
+  return(
+    <div className={`uc ${UC[u.status]||"uc-occ"} ${sel?"sel":""}`} onClick={onClick}
+      title={isVacant?`Unit ${u.id} — click to add tenant`:u.tenant||u.id}>
+      <div className={`udot ${DC[u.status]||"d-occ"}`}/>
       <div className="uid">{u.id}</div>
-      {u.tenant && <div className="uten">{u.tenant}</div>}
-      {u.rent && <div className="uprice">£{u.rent}/mo</div>}
-      {isVacant && !u.tenant && <div style={{ fontSize: 8, opacity: 0.5, marginTop: 1 }}>+ tenant</div>}
+      {u.tenant&&<div className="uten">{u.tenant}</div>}
+      {u.rent&&<div className="uprice">£{u.rent}/mo</div>}
+      {isVacant&&!u.tenant&&<div style={{fontSize:8,opacity:0.6,marginTop:1}}>+ tenant</div>}
     </div>
   );
 }
 
-function Legend() {
-  return (
-    <div className="sp-legend">
-      {[["#1A7F5A", "Occupied"], ["#E65100", "In Arrears"], ["#C0392B", "Leaving"], ["#F9A825", "New Customer"], ["#AB47BC", "Pending"], ["#1565C0", "Available"]].map(([c, l]) => (
-        <div key={l} className="sp-legend-item">
-          <div className="sp-legend-dot" style={{ background: c }} />
-          {l}
-        </div>
+function Legend(){
+  return(
+    <div className="legend">
+      {[["#1A7F5A","Occupied"],["#E65100","In Arrears"],["#C0392B","Leaving"],["#F9A825","New Customer"],["#AB47BC","Pending"],["#1565C0","Available"]].map(([c,l])=>(
+        <div key={l} className="li"><div className="ld" style={{background:c}}/>{l}</div>
       ))}
     </div>
   );
 }
 
-// ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({ item, onClose, onSave, onDelete, onArchive, isNew, areas = [], existingIds = [], token, onSwitchToEdit }) {
-  const [form, setForm] = useState({ ...item });
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [savedForm, setSavedForm] = useState({ ...item });
-  const [showNewArea, setShowNewArea] = useState(false);
-  const [newArea, setNewArea] = useState("");
+function ShieldLogo({size=36}){
+  return(
+    <svg width={size} height={size} viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M18 2L4 8V18C4 25.4 10.2 32.2 18 34C25.8 32.2 32 25.4 32 18V8L18 2Z" fill="white" fillOpacity="0.15" stroke="white" strokeWidth="1.5"/>
+      <text x="18" y="23" textAnchor="middle" fill="white" fontSize="14" fontFamily="Georgia,serif" fontWeight="bold">C</text>
+    </svg>
+  );
+}
 
-  function formsEqual(a, b) {
-    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    for (const k of keys) {
-      const av = a[k] == null ? "" : String(a[k]);
-      const bv = b[k] == null ? "" : String(b[k]);
-      if (av !== bv) return false;
+// ─── Login Page ───────────────────────────────────────────────────────────────
+function QRImage({svgString}){
+  const [src,setSrc]=useState(null);
+  useEffect(()=>{
+    if(!svgString) return;
+    try{
+      const svg=svgString.startsWith("<svg")||svgString.startsWith("<?xml")
+        ? svgString
+        : `<svg>${svgString}</svg>`;
+      const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
+      const url=URL.createObjectURL(blob);
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement("canvas");
+        canvas.width=200; canvas.height=200;
+        const ctx=canvas.getContext("2d");
+        ctx.fillStyle="#ffffff";
+        ctx.fillRect(0,0,200,200);
+        ctx.drawImage(img,0,0,200,200);
+        setSrc(canvas.toDataURL("image/png"));
+        URL.revokeObjectURL(url);
+      };
+      img.src=url;
+    }catch(e){}
+  },[svgString]);
+  if(!src) return <div style={{width:200,height:200,background:"#f5f5f5",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#999",fontSize:12}}>Loading QR...</div>;
+  return(
+    <div>
+      <img src={src} alt="MFA QR Code" style={{width:200,height:200,border:"2px solid #E4EAF2",borderRadius:8,imageRendering:"pixelated"}}/>
+      <div style={{marginTop:8}}>
+        <a href={src} download="camstorage-mfa-qr.png" className="btn btn-outline btn-sm">⬇️ Download QR Code</a>
+      </div>
+    </div>
+  );
+}
+
+function LoginPage({onLogin}){
+  const [step,setStep]=useState("login");
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [code,setCode]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [session,setSession]=useState(null);
+  const [factorId,setFactorId]=useState(null);
+  const [challengeId,setChallengeId]=useState(null);
+  const [qrCode,setQrCode]=useState(null);
+  const [secret,setSecret]=useState(null);
+
+  async function handleLogin(e){
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try{
+      const sess=await signIn(email,password);
+      if(sess.error) throw new Error(sess.error_description||sess.msg||"Login failed");
+      setSession(sess);
+      const factors=await mfaListFactors(sess.access_token);
+      const totpFactors=Array.isArray(factors)?factors.filter(f=>f.factor_type==="totp"&&f.status==="verified"):[];
+      if(totpFactors.length>0){
+        const f=totpFactors[0];
+        setFactorId(f.id);
+        const ch=await mfaChallenge(f.id,sess.access_token);
+        setChallengeId(ch.id);
+        setStep("mfa-verify");
+      } else {
+        setStep("mfa-setup");
+      }
+    }catch(err){
+      setError(err.message||"Invalid email or password");
+    }
+    setLoading(false);
+  }
+
+  async function handleForgotPassword(e){
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try{
+      await resetPassword(email);
+      setStep("forgot-sent");
+    }catch(err){
+      setError("Could not send reset email — please try again");
+    }
+    setLoading(false);
+  }
+
+  async function handleSetupMFA(){
+    setLoading(true); setError("");
+    try{
+      const enroll=await mfaEnroll(session.access_token);
+      if(enroll.error||enroll.msg) throw new Error(enroll.error_description||enroll.msg||"Enrolment failed");
+      if(enroll.id){
+        setFactorId(enroll.id);
+        setQrCode(enroll.totp?.qr_code);
+        setSecret(enroll.totp?.secret);
+        const ch=await mfaChallenge(enroll.id,session.access_token);
+        setChallengeId(ch.id);
+        setStep("mfa-enroll");
+      } else {
+        throw new Error("No factor ID returned");
+      }
+    }catch(err){
+      setError("Could not set up MFA: "+err.message);
+    }
+    setLoading(false);
+  }
+
+  async function handleVerifyMFA(e){
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try{
+      const result=await mfaVerify(factorId,challengeId,code.replace(/\s/g,""),session.access_token);
+      if(result.access_token){
+        onLogin({...session,access_token:result.access_token});
+      } else {
+        setError("Incorrect code — please try again");
+        const ch=await mfaChallenge(factorId,session.access_token);
+        setChallengeId(ch.id);
+      }
+    }catch(err){setError("Verification failed — please try again");}
+    setLoading(false);
+    setCode("");
+  }
+
+  async function skipMFA(){ onLogin(session); }
+
+  return(
+    <div className="login-page">
+      <div className="login-box">
+        <div className="login-logo" style={{flexDirection:"column",gap:8}}>
+          <ShieldLogo size={52}/>
+          <div className="login-logotext" style={{color:"var(--navy)"}}>CamStorage</div>
+        </div>
+
+        {step==="login"&&(
+          <>
+            <p className="login-sub">Management Platform — Sign in to continue</p>
+            {error&&<div className="login-err">{error}</div>}
+            <form onSubmit={handleLogin}>
+              <div className="login-field">
+                <label>Email Address</label>
+                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required autoFocus/>
+              </div>
+              <div className="login-field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••••" required/>
+              </div>
+              <button className="login-btn" type="submit" disabled={loading}>{loading?"Signing in...":"Sign In"}</button>
+            </form>
+            <button onClick={()=>{setStep("forgot");setError("");}} style={{width:"100%",background:"none",border:"none",color:"var(--sub)",fontSize:13,cursor:"pointer",padding:"10px",marginTop:4}}>
+              Forgot your password?
+            </button>
+          </>
+        )}
+
+        {step==="forgot"&&(
+          <>
+            <p className="login-sub">Reset your password</p>
+            <p style={{fontSize:13,color:"var(--sub)",marginBottom:16,textAlign:"center"}}>Enter your email address and we will send you a link to reset your password.</p>
+            {error&&<div className="login-err">{error}</div>}
+            <form onSubmit={handleForgotPassword}>
+              <div className="login-field">
+                <label>Email Address</label>
+                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required autoFocus/>
+              </div>
+              <button className="login-btn" type="submit" disabled={loading}>{loading?"Sending...":"Send Reset Link"}</button>
+            </form>
+            <button onClick={()=>{setStep("login");setError("");}} style={{width:"100%",background:"none",border:"none",color:"var(--sub)",fontSize:13,cursor:"pointer",padding:"10px",marginTop:4}}>
+              Back to login
+            </button>
+          </>
+        )}
+
+        {step==="forgot-sent"&&(
+          <>
+            <div style={{textAlign:"center",padding:"20px 0"}}>
+              <div style={{fontSize:40,marginBottom:12}}>📧</div>
+              <h3 style={{color:"var(--navy)",fontFamily:"var(--fh)",marginBottom:8}}>Check your inbox</h3>
+              <p style={{fontSize:13,color:"var(--sub)",marginBottom:20}}>We have sent a password reset link to <strong>{email}</strong>. Click the link in the email to set a new password.</p>
+              <p style={{fontSize:12,color:"var(--sub)"}}>Did not receive it? Check your spam folder or try again.</p>
+            </div>
+            <button className="login-btn" onClick={()=>{setStep("login");setError("");}} style={{marginTop:8}}>Back to Login</button>
+          </>
+        )}
+
+        {step==="mfa-setup"&&(
+          <>
+            <p className="login-sub">One more step — secure your account</p>
+            <div style={{background:"#EEF8FF",border:"1.5px solid #BDE0F5",borderRadius:9,padding:"16px",marginBottom:16,fontSize:13,color:"var(--navy)"}}>
+              <div style={{fontWeight:700,marginBottom:8}}>🔐 Set up two-factor authentication</div>
+              <p style={{fontSize:12,color:"var(--sub)",margin:"0 0 8px"}}>Two-factor authentication (2FA) adds an extra layer of security. After entering your password, you'll be asked for a 6-digit code from an app on your phone.</p>
+              <p style={{fontSize:12,color:"var(--sub)",margin:"0 0 8px"}}><strong>You'll need:</strong> Google Authenticator or Authy installed on your phone (both free).</p>
+              <p style={{fontSize:12,color:"var(--sub)",margin:0}}><strong>Important:</strong> Save the backup code shown during setup in a safe place — you'll need it if you lose your phone.</p>
+            </div>
+            {error&&<div className="login-err">{error}</div>}
+            <button className="login-btn" onClick={handleSetupMFA} disabled={loading} style={{marginBottom:16}}>{loading?"Setting up...":"Set Up Authenticator App →"}</button>
+            <div style={{borderTop:"1px solid #E4EAF2",paddingTop:12,textAlign:"center"}}>
+              <p style={{fontSize:11,color:"var(--sub)",marginBottom:6}}>Not ready right now? You can set this up later from the Users & Security page.</p>
+              <button onClick={skipMFA} style={{background:"none",border:"1px solid #D0DAE8",borderRadius:6,color:"var(--sub)",fontSize:11,cursor:"pointer",padding:"5px 12px"}}>Skip for now</button>
+            </div>
+          </>
+        )}
+
+        {step==="mfa-enroll"&&(
+          <>
+            <p className="login-sub">Scan this QR code with your authenticator app</p>
+            {error&&<div className="login-err">{error}</div>}
+            {qrCode&&<div style={{textAlign:"center",margin:"16px 0"}}><QRImage svgString={qrCode}/></div>}
+            {secret&&(
+              <div style={{background:"var(--mist)",borderRadius:7,padding:"8px 12px",marginBottom:14,fontSize:11,color:"var(--sub)",textAlign:"center"}}>
+                Cannot scan? Enter this code manually:<br/>
+                <strong style={{fontSize:13,letterSpacing:2,color:"var(--navy)"}}>{secret}</strong>
+              </div>
+            )}
+            <form onSubmit={handleVerifyMFA}>
+              <div className="login-field">
+                <label>Enter 6-digit code from your app</label>
+                <input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e=>setCode(e.target.value)} placeholder="000000" autoFocus style={{textAlign:"center",letterSpacing:4,fontSize:20}}/>
+              </div>
+              <button className="login-btn" type="submit" disabled={loading||code.replace(/\s/g,"").length<6}>{loading?"Verifying...":"Verify & Enable MFA"}</button>
+            </form>
+          </>
+        )}
+
+        {step==="mfa-verify"&&(
+          <>
+            <p className="login-sub">Enter the 6-digit code from your authenticator app</p>
+            {error&&<div className="login-err">{error}</div>}
+            <form onSubmit={handleVerifyMFA}>
+              <div className="login-field">
+                <label>Authentication Code</label>
+                <input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e=>setCode(e.target.value)} placeholder="000000" autoFocus style={{textAlign:"center",letterSpacing:4,fontSize:20}}/>
+              </div>
+              <button className="login-btn" type="submit" disabled={loading||code.replace(/\s/g,"").length<6}>{loading?"Verifying...":"Verify"}</button>
+            </form>
+            <button onClick={()=>{setStep("forgot");setError("");}} style={{width:"100%",background:"none",border:"none",color:"var(--sub)",fontSize:13,cursor:"pointer",padding:"8px",marginTop:4}}>Forgot password?</button>
+            <button onClick={()=>{setStep("login");setCode("");setError("");}} style={{width:"100%",background:"none",border:"none",color:"var(--sub)",fontSize:13,cursor:"pointer",padding:"4px"}}>Back to login</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit Modal ───────────────────────────────────────────────────────────────
+function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[]}){
+  const [form,setForm]=useState({...item});
+  const [saving,setSaving]=useState(false);
+  const [newArea,setNewArea]=useState("");
+  const [showNewArea,setShowNewArea]=useState(false);
+  const [saved,setSaved]=useState(false);
+  const [newUnitId,setNewUnitId]=useState("");
+  const [changingId,setChangingId]=useState(false);
+  const [showChangeId,setShowChangeId]=useState(false);
+  const [savedForm,setSavedForm]=useState({...item});
+  function formsEqual(a,b){
+    const keys=new Set([...Object.keys(a),...Object.keys(b)]);
+    for(const k of keys){
+      const av=a[k]==null?"":String(a[k]);
+      const bv=b[k]==null?"":String(b[k]);
+      if(av!==bv) return false;
     }
     return true;
   }
+  const isDirty=!formsEqual(form,savedForm);
+  const u=k=>e=>setForm(f=>({...f,[k]:e.target.value}));
+  const n=k=>e=>setForm(f=>({...f,[k]:e.target.value===""?null:Number(e.target.value)}));
 
-  const isDirty = !formsEqual(form, savedForm);
-  const u = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
-  const n = k => e => setForm(f => ({ ...f, [k]: e.target.value === "" ? null : Number(e.target.value) }));
-
-  function handleClose() {
-    if (isDirty && !window.confirm("You have unsaved changes. Close without saving?")) return;
+  function handleClose(){
+    if(isDirty&&!window.confirm("You have unsaved changes. Close without saving?")) return;
     onClose();
   }
 
-  async function save() {
-    setSaving(true);
-    // Auto-generate ID from label for Residential/Commercial if missing
-    let saveForm = { ...form };
-    if (!saveForm.id && saveForm.label) {
-      saveForm.id = saveForm.label.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
-      setForm(f => ({ ...f, id: saveForm.id }));
-    }
-    if (!saveForm.id) {
-      setSaving(false);
-      alert("Please enter a property name before saving.");
+  async function handleChangeUnitId(){
+    if(!newUnitId||newUnitId===form.id) return;
+    // Check if new ID already exists
+    const existing=existingIds&&existingIds.find(u=>u.id===newUnitId);
+    if(existing){
+      alert(`❌ Unit "${newUnitId}" already exists${existing.tenant?` — occupied by ${existing.tenant}`:""}.\n\nPlease choose a different unit ID.`);
       return;
     }
-    await onSave(saveForm);
-    setSavedForm({ ...saveForm });
-    setSaving(false);
-    setSaved(true);
-    // If this was a new record, switch to edit mode so documents section appears
-    if (isNew && onSwitchToEdit) onSwitchToEdit(saveForm);
-    setTimeout(() => setSaved(false), 2000);
+    if(!window.confirm(`Change unit ID from "${form.id}" to "${newUnitId}"?\n\nThis will update all documents and records.`)) return;
+    setChangingId(true);
+    try{
+      await onChangeUnitId(form.id, newUnitId);
+      setForm(f=>({...f,id:newUnitId}));
+      setShowChangeId(false);
+      setNewUnitId("");
+      setSaved(true);
+      setTimeout(()=>setSaved(false),2000);
+    }catch(e){alert("Failed to change unit ID: "+e.message);}
+    setChangingId(false);
   }
 
-  const areaNames = areas.map(a => a.name);
-
-  return (
-    <div className="modal-ov" onClick={e => e.target === e.currentTarget && handleClose()}>
+  async function save(){setSaving(true);await onSave(form);setSavedForm({...form});setSaving(false);setSaved(true);setTimeout(()=>setSaved(false),2000);}
+  return(
+    <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&handleClose()}>
       <div className="modal">
-        <div className="modal-header">
-          <div className="modal-title">
-            {isNew ? "Add New Unit / Tenant" : `Edit — ${form.label || form.id}`}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {isDirty && <span className="unsaved-badge">● Unsaved changes</span>}
-            <button className="modal-close" onClick={handleClose}>✕</button>
-          </div>
+        <div className="mh">
+          <div className="mt">{isNew?"Add New Unit / Tenant":"Edit — "+(form.label||"Unit "+form.id)}</div>
+          {isDirty&&<span style={{fontSize:11,color:"var(--gold)",fontWeight:600,marginRight:8}}>● Unsaved changes</span>}
+          <button className="mc" onClick={handleClose}>✕</button>
         </div>
-
-        <div className="modal-body">
-          <div className="form-grid">
-            {/* Category */}
-            {isNew && (
-              <div className="form-grid-item">
-                <label>Category</label>
-                <select value={form.category || "Storage"} onChange={u("category")}>
-                  {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
-                </select>
+        {!isNew&&form.category==="Storage"&&(
+          <div style={{padding:"8px 24px",borderBottom:"1px solid #E4EAF2",background:"#F8FAFC",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,color:"var(--sub)"}}>Unit ID: <strong style={{color:"var(--navy)"}}>{form.id}</strong></span>
+            {!showChangeId?(
+              <button className="btn btn-outline btn-sm" style={{fontSize:11}} onClick={()=>{setShowChangeId(true);setNewUnitId(form.id);}}>✏️ Change Unit ID</button>
+            ):(
+              <div className="fr" style={{gap:6}}>
+                <input value={newUnitId} onChange={e=>setNewUnitId(e.target.value)} placeholder="New unit ID" style={{fontFamily:"var(--fb)",fontSize:12,padding:"4px 8px",border:"1.5px solid var(--gold)",borderRadius:6,width:120}}/>
+                <button className="btn btn-primary btn-sm" onClick={handleChangeUnitId} disabled={changingId}>{changingId?"Updating…":"✓ Save"}</button>
+                <button className="btn btn-outline btn-sm" onClick={()=>setShowChangeId(false)}>✕</button>
               </div>
             )}
-
-            {/* Unit ID — Storage only */}
-            {isNew && form.category === "Storage" && (
-              <div className="form-grid-item">
-                <label>Unit ID *</label>
-                <input value={form.id || ""} onChange={u("id")} placeholder="e.g. 73, A4, FP32" />
-              </div>
-            )}
-
-            {/* Property name — Residential/Commercial */}
-            {(form.category === "Residential" || form.category === "Commercial") && (
-              <div className="form-grid-item full">
-                <label>Property Name</label>
-                <input
-                  value={form.label || ""}
-                  onChange={e => setForm(f => ({ ...f, label: e.target.value, ...(f.id ? {} : { id: e.target.value.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_") }) }))}
-                  placeholder="e.g. 14 High Street, Unit 3B"
-                />
-              </div>
-            )}
-
-            {/* Tenant name */}
-            <div className="form-grid-item full">
-              <label>Tenant Name</label>
-              <input value={form.tenant || ""} onChange={u("tenant")} />
-            </div>
-
-            {/* Address */}
-            <div className="form-grid-item full">
-              <label>Address</label>
-              <textarea value={form.address || ""} onChange={u("address")} placeholder="Tenant's home or business address…" style={{ minHeight: 60 }} />
-            </div>
-
-            {/* Contact */}
-            <div className="form-grid-item">
-              <label>Email</label>
-              <input type="email" value={form.email || ""} onChange={u("email")} />
-            </div>
-            <div className="form-grid-item">
-              <label>Phone</label>
-              <input value={form.phone || ""} onChange={u("phone")} />
-            </div>
-
-            {/* Status & Payment */}
-            <div className="form-grid-item">
-              <label>Status</label>
-              <select value={form.status || "occupied"} onChange={u("status")}>
-                {STATUSES.map(s => <option key={s} value={s}>{SL[s]}</option>)}
+          </div>
+        )}
+        <div className="mb-m">
+          <div className="fg">
+            {isNew&&(form.category==="Storage")&&<div className="fgi"><label>Unit ID</label><input value={form.id||""} onChange={u("id")} placeholder="e.g. 73 or FP32"/></div>}
+            {isNew&&<div className="fgi"><label>Category</label>
+              <select value={form.category||"Storage"} onChange={u("category")}>
+                {["Storage","Residential","Commercial"].map(c=><option key={c}>{c}</option>)}
+              </select>
+            </div>}
+            {(form.category==="Residential"||form.category==="Commercial")&&
+              <div className="fgi full"><label>Property Name</label><input value={form.label||""} onChange={e=>setForm(f=>({...f,label:e.target.value,...(f.id?{}:{id:e.target.value.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,'_')})}))}/></div>}
+            <div className="fgi full"><label>Tenant Name</label><input value={form.tenant||""} onChange={u("tenant")}/></div>
+            <div className="fgi full"><label>Address</label><textarea value={form.address||""} onChange={u("address")} placeholder="Tenant's home or business address…" style={{minHeight:60}}/></div>
+            <div className="fgi"><label>Email</label><input type="email" value={form.email||""} onChange={u("email")}/></div>
+            <div className="fgi"><label>Phone</label><input value={form.phone||""} onChange={u("phone")}/></div>
+            <div className="fgi"><label>Status</label>
+              <select value={form.status||"occupied"} onChange={u("status")}>
+                {STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}
               </select>
             </div>
-            <div className="form-grid-item">
-              <label>Payment Method</label>
-              <select value={form.payment || ""} onChange={u("payment")}>
+            <div className="fgi"><label>Payment Method</label>
+              <select value={form.payment||""} onChange={u("payment")}>
                 <option value="">— Select —</option>
-                {PAYMENTS.map(p => <option key={p} value={p}>{p}</option>)}
+                {PAYMENTS.map(p=><option key={p} value={p}>{p}</option>)}
               </select>
             </div>
+            <div className="fgi"><label>Rent (ex-VAT) £/mo</label><input type="number" value={form.rent||""} onChange={n("rent")}/></div>
+            <div className="fgi"><label>Rent (inc-VAT) £/mo</label><input type="number" value={form.vat_rent||""} onChange={n("vat_rent")}/></div>
 
-            {/* Rent */}
-            <div className="form-grid-item">
-              <label>Rent (ex-VAT) £/mo</label>
-              <input type="number" value={form.rent || ""} onChange={n("rent")} />
+            {/* Deposits & Keys section */}
+            <div className="fgi full" style={{gridColumn:"span 2",borderTop:"1px solid #E4EAF2",paddingTop:12,marginTop:4}}>
+              <label style={{fontSize:12,fontWeight:700,color:"var(--navy)",textTransform:"none",letterSpacing:0}}>Deposits & Keys</label>
             </div>
-            <div className="form-grid-item">
-              <label>Rent (inc-VAT) £/mo</label>
-              <input type="number" value={form.vat_rent || ""} onChange={n("vat_rent")} />
-            </div>
-
-            {/* Deposits section */}
-            <div className="form-section-label">Deposits & Keys</div>
-            <div className="form-grid-item">
-              <label>Lock/Fob Deposit Paid</label>
-              <select value={form.lock_deposit_paid || ""} onChange={u("lock_deposit_paid")}>
+            <div className="fgi"><label>Lock/Fob Deposit Paid</label>
+              <select value={form.lock_deposit_paid||""} onChange={u("lock_deposit_paid")}>
                 <option value="">— Select —</option>
                 <option value="Yes">Yes</option>
                 <option value="No">No</option>
                 <option value="Cash">Cash</option>
               </select>
             </div>
-            <div className="form-grid-item">
-              <label>Lock/Fob Deposit Amount £</label>
-              <input type="number" value={form.lock_deposit_amount || ""} onChange={n("lock_deposit_amount")} placeholder="e.g. 50" />
-            </div>
-            <div className="form-grid-item">
-              <label>Tenant Deposit Held £</label>
-              <input type="number" value={form.tenant_deposit || ""} onChange={n("tenant_deposit")} placeholder="e.g. 20" />
-            </div>
-            <div className="form-grid-item">
-              <label>Key / Lock Number</label>
-              <input value={form.key_number || ""} onChange={u("key_number")} placeholder="e.g. 005, 33222" />
-            </div>
+            <div className="fgi"><label>Lock/Fob Deposit Amount £</label><input type="number" value={form.lock_deposit_amount||""} onChange={n("lock_deposit_amount")} placeholder="e.g. 50"/></div>
+            <div className="fgi"><label>Tenant Deposit Held £</label><input type="number" value={form.tenant_deposit||""} onChange={n("tenant_deposit")} placeholder="e.g. 20"/></div>
+            <div className="fgi"><label>Key / Lock Number</label><input value={form.key_number||""} onChange={u("key_number")} placeholder="e.g. 005, 33222"/></div>
 
-            {/* Storage-specific */}
-            {form.category === "Storage" && (
-              <>
-                <div className="form-section-label">Unit Details</div>
-                <div className="form-grid-item">
-                  <label>Row / Location</label>
-                  {showNewArea ? (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <input
-                        style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 13, padding: "8px 11px", border: "1.5px solid var(--gold)", borderRadius: 7, outline: "none" }}
-                        value={newArea}
-                        onChange={e => setNewArea(e.target.value)}
-                        placeholder="New area name e.g. Row 8"
-                        autoFocus
-                        onKeyDown={e => {
-                          if (e.key === "Enter" && newArea.trim()) {
-                            setForm(f => ({ ...f, row_name: newArea.trim() }));
-                            setShowNewArea(false);
-                            setNewArea("");
-                          }
-                        }}
-                      />
-                      <button className="modal-btn modal-btn-primary" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => { if (newArea.trim()) { setForm(f => ({ ...f, row_name: newArea.trim() })); setShowNewArea(false); setNewArea(""); } }}>✓</button>
-                      <button className="modal-btn modal-btn-outline" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => { setShowNewArea(false); setNewArea(""); }}>✕</button>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <select
-                        style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 13, padding: "8px 11px", border: "1.5px solid var(--mist2)", borderRadius: 7, outline: "none" }}
-                        value={form.row_name || ""}
-                        onChange={e => setForm(f => ({ ...f, row_name: e.target.value }))}
-                      >
-                        <option value="">— Select area —</option>
-                        {areaNames.map(a => <option key={a} value={a}>{a}</option>)}
-                        {form.row_name && !areaNames.includes(form.row_name) && (
-                          <option value={form.row_name}>{form.row_name} (new)</option>
-                        )}
-                      </select>
-                      <button className="modal-btn modal-btn-outline" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setShowNewArea(true)} title="Add new area">+</button>
-                    </div>
-                  )}
-                </div>
-                <div className="form-grid-item">
-                  <label>Box Number</label>
-                  <input value={form.box_no || ""} onChange={u("box_no")} />
-                </div>
-                <div className="form-grid-item">
-                  <label>Size</label>
-                  <input value={form.size || ""} onChange={u("size")} placeholder="e.g. XL(20ft)" />
-                </div>
-              </>
-            )}
-
-            {/* Residential/Commercial — Lease Review */}
-            {(form.category === "Residential" || form.category === "Commercial") && (
-              <div className="form-grid-item">
-                <label>Lease Review Date</label>
-                <input type="date" value={form.review || ""} onChange={u("review")} />
+            {form.category==="Storage"&&<>
+              <div className="fgi full" style={{borderTop:"1px solid #E4EAF2",paddingTop:12,marginTop:4}}>
+                <label style={{fontSize:12,fontWeight:700,color:"var(--navy)",textTransform:"none",letterSpacing:0}}>Unit Details</label>
               </div>
-            )}
-
-            {/* Dates */}
-            <div className="form-grid-item">
-              <label>Move-in Date</label>
-              <input type="date" value={form.move_in_date || ""} onChange={u("move_in_date")} />
-            </div>
-            <div className="form-grid-item">
-              <label>Move-out Date</label>
-              <input type="date" value={form.move_out_date || ""} onChange={e => {
-                const val = e.target.value;
-                setForm(f => ({ ...f, move_out_date: val, status: val && new Date(val) <= new Date() ? "leaving" : f.status }));
-              }} />
-            </div>
-
-            {/* Notes */}
-            <div className="form-grid-item full">
-              <label>Notes</label>
-              <textarea value={form.notes || ""} onChange={u("notes")} placeholder="Additional notes, special requirements…" />
-            </div>
+              <div className="fgi">
+                <label>Row / Location</label>
+                {showNewArea?(
+                  <div className="fr" style={{gap:6}}>
+                    <input style={{flex:1,fontFamily:"var(--fb)",fontSize:13,padding:"8px 11px",border:"1.5px solid var(--gold)",borderRadius:7,outline:"none"}} value={newArea} onChange={e=>setNewArea(e.target.value)} placeholder="New area name e.g. Row 8" autoFocus
+                      onKeyDown={e=>{if(e.key==="Enter"&&newArea.trim()){setForm(f=>({...f,row_name:newArea.trim()}));setShowNewArea(false);setNewArea("");}}}
+                    />
+                    <button className="btn btn-primary btn-sm" onClick={()=>{if(newArea.trim()){setForm(f=>({...f,row_name:newArea.trim()}));setShowNewArea(false);setNewArea("");}}}>✓ Add</button>
+                    <button className="btn btn-outline btn-sm" onClick={()=>{setShowNewArea(false);setNewArea("");}}>✕</button>
+                  </div>
+                ):(
+                  <div className="fr" style={{gap:6}}>
+                    <select style={{flex:1,fontFamily:"var(--fb)",fontSize:13,padding:"8px 11px",border:"1.5px solid #D0DAE8",borderRadius:7,outline:"none"}} 
+                      value={form.row_name||""} 
+                      onChange={e=>setForm(f=>({...f,row_name:e.target.value,category:"Storage"}))}>
+                      <option value="">— Select area —</option>
+                      {areas.map(a=><option key={a} value={a}>{a}</option>)}
+                      {form.row_name&&!areas.includes(form.row_name)&&(
+                        <option value={form.row_name}>{form.row_name} (new)</option>
+                      )}
+                    </select>
+                    <button className="btn btn-outline btn-sm" onClick={()=>setShowNewArea(true)} title="Add new area">+</button>
+                  </div>
+                )}
+              </div>
+              <div className="fgi"><label>Box Number</label><input value={form.box_no||""} onChange={u("box_no")}/></div>
+              <div className="fgi"><label>Size</label><input value={form.size||""} onChange={u("size")} placeholder="e.g. XL(20ft)"/></div>
+            </>}
+            {(form.category==="Residential"||form.category==="Commercial")&&
+              <div className="fgi"><label>Lease Review Date</label><input type="date" value={form.review||""} onChange={u("review")}/></div>}
+            <div className="fgi"><label>Move-in Date</label><input type="date" value={form.move_in_date||""} onChange={u("move_in_date")}/></div>
+            <div className="fgi"><label>Move-out Date</label><input type="date" value={form.move_out_date||""} onChange={e=>{
+              const val=e.target.value;
+              setForm(f=>({...f,move_out_date:val,
+                status:val&&new Date(val)<=new Date()?"leaving":f.status
+              }));
+            }}/></div>
+            <div className="fgi full"><label>Notes</label><textarea value={form.notes||""} onChange={u("notes")} placeholder="Additional notes, second address, special requirements…"/></div>
           </div>
-
-          {/* Documents section — only shown when editing an existing record */}
-          {!isNew && form.id && (
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 8 }}>
-              <div style={{ fontFamily: "var(--fh)", fontSize: 13, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>
-                📁 Documents
-              </div>
-              <TenantDocuments tenantId={form.id} orgId={form.org_id} token={token} />
-            </div>
-          )}
         </div>
-
-        <div className="modal-footer">
-          {!isNew && !form.tenant && (
-            <button className="modal-btn modal-btn-danger" onClick={() => {
-              if (!window.confirm(`Permanently delete unit ${form.id}? This cannot be undone.`)) return;
-              onDelete(form.id); onClose();
-            }}>🗑️ Delete Unit</button>
-          )}
-          {!isNew && form.tenant && onArchive && (
-            <button className="modal-btn modal-btn-archive" onClick={() => { onArchive(form.id); onClose(); }}>
-              📦 Archive Tenant
-            </button>
-          )}
-          <button className="modal-btn modal-btn-outline" onClick={handleClose}>Close</button>
-          <button className="modal-btn modal-btn-primary" onClick={save} disabled={saving}>
-            {saving ? "Saving…" : saved ? "✅ Saved!" : "Save Changes"}
-          </button>
+        {!isNew&&token&&(
+          <div style={{borderTop:"1px solid #E4EAF2",padding:"16px 22px"}}>
+            <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📁 Documents</div>
+            <TenantDocuments tenantId={form.id} token={token}/>
+          </div>
+        )}
+        <div className="mf">
+          {!isNew&&<button className="btn btn-danger" onClick={()=>{onDelete(form.id);onClose();}}>Delete</button>}
+          {!isNew&&<button className="btn btn-outline" style={{color:"#7B6F3A"}} onClick={()=>{if(onArchive){onArchive(form.id);onClose();}}}>📦 Archive</button>}
+          <button className="btn btn-outline" onClick={handleClose}>Close</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving…":saved?"✅ Saved!":"Save Changes"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ─── Site Plan ────────────────────────────────────────────────────────────────
-function SitePlanPage({ data, areas, onEdit, onAdd, onDelete, onRenameRow, onDeleteRow, onSaveAreaOrder, onAddArea, onSaveUnitOrder }) {
-  const [sel, setSel] = useState(null);
-  const [filt, setFilt] = useState("all");
-  const [showAddUnit, setShowAddUnit] = useState(false);
-  const [showAddArea, setShowAddArea] = useState(false);
-  const [editingRow, setEditingRow] = useState(null);
-  const [editingRowName, setEditingRowName] = useState("");
-  const [newAreaName, setNewAreaName] = useState("");
-  const [newUnit, setNewUnit] = useState({ id: "", category: "Storage", row_name: "", size: "", box_no: "", status: "available" });
-  const [dragOver, setDragOver] = useState(null);
-  const [dragOverUnit, setDragOverUnit] = useState(null);
-  const dragRow = useRef(null);
-  const dragUnit = useRef(null);
-  const detailRef = useRef(null);
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
+  const res=data.filter(d=>d.category==="Residential");
+  const com=data.filter(d=>d.category==="Commercial");
+  const stor=data.filter(d=>d.category==="Storage");
+  const occ=stor.filter(u=>["occupied","arrears"].includes(u.status)).length;
+  const activeStatuses=["occupied","arrears","new"];
+  const storRent=stor.filter(u=>u.rent&&activeStatuses.includes(u.status)).reduce((a,b)=>a+(Number(b.rent)||0),0);
+  const resRent=res.filter(u=>u.rent&&activeStatuses.includes(u.status)).reduce((a,b)=>a+(Number(b.rent)||0),0);
+  const comRent=com.filter(u=>u.rent&&activeStatuses.includes(u.status)).reduce((a,b)=>a+(Number(b.rent)||0),0);
+  const totalRent=storRent+resRent+comRent;
+  const leaving=data.filter(u=>u.status==="leaving");
+  const arrears=data.filter(u=>u.status==="arrears");
+  const newC=data.filter(u=>u.status==="new");
 
-  const rowOrder = areas.map(a => a.name);
-  const stor = data.filter(d => d.category === "Storage");
-  const fu = arr => filt === "all" ? arr : arr.filter(u => u.status === filt);
-  const selU = stor.find(u => u.id === sel);
-  const nu = k => e => setNewUnit(f => ({ ...f, [k]: e.target.value }));
+  // Waiting list demand
+  const activeEnquiries=enquiries.filter(e=>e.status==="waiting"||e.status==="contacted"||e.status==="reserved");
+  const reservedEnquiries=enquiries.filter(e=>e.status==="reserved");
+  const enqByCategory={
+    Storage:activeEnquiries.filter(e=>e.category==="Storage").length,
+    Residential:activeEnquiries.filter(e=>e.category==="Residential").length,
+    Commercial:activeEnquiries.filter(e=>e.category==="Commercial").length,
+  };
 
-  // ── Area drag ──
-  function handleAreaDragStart(e, row) { dragRow.current = row; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row); }
-  function handleAreaDragOver(e, row) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver(row); }
-  function handleAreaDrop(e, targetRow) {
-    e.preventDefault();
-    const fromRow = dragRow.current || (() => { try { return e.dataTransfer.getData("text/plain"); } catch { return null; } })();
-    dragRow.current = null; setDragOver(null);
-    if (!fromRow || fromRow === targetRow) return;
-    const newOrder = [...rowOrder];
-    const fromIdx = newOrder.indexOf(fromRow);
-    const toIdx = newOrder.indexOf(targetRow);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const reordered = [...newOrder];
-    reordered.splice(fromIdx, 1);
-    reordered.splice(toIdx, 0, fromRow);
-    if (onSaveAreaOrder) onSaveAreaOrder(reordered);
-  }
-  function handleAreaDragEnd() { dragRow.current = null; setDragOver(null); }
+  // Vacancy match — vacant units with waiting enquiries in same category
+  const vacantUnits=data.filter(u=>u.status==="available"||u.status==="vacant"||(!u.status&&!u.tenant&&u.id));
+  const vacancyMatches=vacantUnits.map(u=>{
+    const matches=activeEnquiries.filter(e=>e.category===u.category);
+    return matches.length>0?{unit:u,count:matches.length}:null;
+  }).filter(Boolean);
 
-  // ── Unit drag ──
-  function handleUnitDragStart(e, unit) { dragUnit.current = unit; e.dataTransfer.effectAllowed = "move"; }
-  function handleUnitDrop(e, targetId, rowUnits, targetRow) {
-    e.preventDefault(); e.stopPropagation();
-    const fromUnit = dragUnit.current;
-    if (!fromUnit || fromUnit.id === targetId) { setDragOverUnit(null); return; }
-    const updates = [];
-    const targetSorted = [...rowUnits].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-    const toIdx = targetSorted.findIndex(u => u.id === targetId);
-    if (fromUnit.row_name === targetRow) {
-      const withoutFrom = targetSorted.filter(u => u.id !== fromUnit.id);
-      withoutFrom.splice(toIdx, 0, fromUnit);
-      withoutFrom.forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: targetRow }));
-    } else {
-      data.filter(u => u.row_name === fromUnit.row_name && u.id !== fromUnit.id)
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-        .forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: u.row_name }));
-      const newTarget = [...targetSorted];
-      newTarget.splice(toIdx < 0 ? newTarget.length : toIdx, 0, { ...fromUnit, row_name: targetRow });
-      newTarget.forEach((u, i) => updates.push({ id: u.id, sort_order: i, row_name: targetRow }));
+  // Rent review alerts — flag Residential/Commercial tenants whose review date is within 60 days
+  // Storage units are excluded (ongoing agreements with no fixed review)
+  const today=new Date(); today.setHours(0,0,0,0);
+  const in60=new Date(today); in60.setDate(in60.getDate()+60);
+  function parseReviewDate(str){
+    if(!str) return null;
+    const s=str.trim();
+    // Date input stores as YYYY-MM-DD — parse in local time to avoid UTC offset issues
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)){
+      const [y,m,d]=s.split("-").map(Number);
+      return new Date(y,m-1,d);
     }
-    if (onSaveUnitOrder) onSaveUnitOrder(updates);
-    dragUnit.current = null; setDragOverUnit(null);
+    return null;
+  }
+  const reviewSoon=data.filter(u=>{
+    if(u.category==="Storage") return false; // Storage excluded
+    if(!u.review||!["occupied","arrears","new"].includes(u.status)) return false;
+    const d=parseReviewDate(u.review);
+    if(!d) return false;
+    return d>=today && d<=in60;
+  });
+
+  return(
+    <div>
+      {/* Revenue KPIs */}
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}><button className="btn btn-outline btn-sm" onClick={()=>onGoTo&&onGoTo("tasks")}>🔧 Add Task</button></div>
+      <div className="kg" style={{gridTemplateColumns:"repeat(4,1fr)"}}>
+        <div className="kc"><div className="kl">Total Monthly Revenue</div><div className="kv">£{totalRent.toLocaleString()}</div><div className="ks">All income ex-VAT</div><div className="ki">💷</div></div>
+        <div className="kc"><div className="kl">Self-Storage Revenue</div><div className="kv">£{storRent.toLocaleString()}</div><div className="ks">{stor.filter(u=>activeStatuses.includes(u.status)&&u.rent).length} active units</div><div className="ki">📦</div></div>
+        <div className="kc"><div className="kl">Residential Revenue</div><div className="kv">£{resRent.toLocaleString()}</div><div className="ks">{res.filter(u=>activeStatuses.includes(u.status)&&u.rent).length} properties</div><div className="ki">🏠</div></div>
+        <div className="kc"><div className="kl">Commercial Revenue</div><div className="kv">£{comRent.toLocaleString()}</div><div className="ks">{com.filter(u=>activeStatuses.includes(u.status)&&u.rent).length} units</div><div className="ki">🏢</div></div>
+      </div>
+      {/* Occupancy KPIs */}
+      <div className="kg" style={{gridTemplateColumns:"repeat(4,1fr)",marginTop:-6}}>
+        <div className="kc"><div className="kl">Storage Occupancy</div><div className="kv">{occ}/{stor.length}</div><div className="ks">{Math.round(occ/Math.max(stor.length,1)*100)}% occupied</div><div className="ki">📊</div></div>
+        <div className="kc"><div className="kl">New This Month</div><div className="kv">{newC.length}</div><div className="ks">Currently onboarding</div><div className="ki">🟡</div></div>
+        <div className="kc"><div className="kl">Attention Required</div><div className="kv">{arrears.length+leaving.length}</div><div className="ks">{arrears.length} arrears · {leaving.length} leaving</div><div className="ki">⚠️</div></div>
+        <div className="kc" style={{cursor:"pointer"}} onClick={()=>onGoTo&&onGoTo("enquiries")}>
+          <div className="kl">Waiting List</div>
+          <div className="kv">{activeEnquiries.length}</div>
+          <div className="ks">
+            {reservedEnquiries.length>0&&<span style={{color:"#7A5C00",fontWeight:600}}>{reservedEnquiries.length} reserved · </span>}
+            {enqByCategory.Storage>0&&`${enqByCategory.Storage} storage`}
+            {enqByCategory.Storage>0&&(enqByCategory.Residential>0||enqByCategory.Commercial>0)&&" · "}
+            {enqByCategory.Residential>0&&`${enqByCategory.Residential} residential`}
+            {enqByCategory.Residential>0&&enqByCategory.Commercial>0&&" · "}
+            {enqByCategory.Commercial>0&&`${enqByCategory.Commercial} commercial`}
+            {activeEnquiries.length===0&&"No active enquiries"}
+          </div>
+          <div className="ki">📋</div>
+        </div>
+      </div>
+      <div className="g3">
+        <div className="card">
+          <div className="ch">
+            <div className="ct">Residential Lets</div>
+            <button className="btn btn-primary btn-sm" onClick={()=>onAdd("Residential")}>+ Add</button>
+          </div>
+          <div className="cb">
+            {res.length===0&&<p className="tsub tsm">No residential properties added yet.</p>}
+            {res.map(r=>(
+              <div key={r.id} style={{padding:"9px 0",borderBottom:"1px solid #F0F4FA"}}>
+                <div className="fb">
+                  <span style={{fontWeight:600,fontSize:13,cursor:"pointer"}} onClick={()=>onEdit(r)}>{r.label||r.id}</span>
+                  <div className="fr">
+                    <Pill s={r.status}/>
+                    <button className="btn btn-outline btn-sm" onClick={()=>onEdit(r)}>Edit</button>
+                    <button className="btn btn-danger btn-sm" onClick={()=>{if(window.confirm(`Delete ${r.label||r.id}?`)){onDelete(r.id);}}}>🗑️</button>
+                  </div>
+                </div>
+                <div className="tsub tsm" style={{marginTop:2}}>{r.tenant} · £{r.rent?.toLocaleString()}/mo</div>
+                {r.review&&<div className="tsub tsm">Review: {r.review}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="card sp2">
+          <div className="ch">
+            <div className="ct">Commercial Units</div>
+            <button className="btn btn-primary btn-sm" onClick={()=>onAdd("Commercial")}>+ Add</button>
+          </div>
+          <div className="cb">
+            {com.length===0&&<p className="tsub tsm">No commercial units added yet.</p>}
+            <div className="tw"><table>
+              <thead><tr><th>Property</th><th>Tenant</th><th>Payment</th><th>Ex-VAT</th><th>Inc-VAT</th><th>Review</th><th>Status</th><th></th></tr></thead>
+              <tbody>{com.map(c=>(
+                <tr key={c.id}>
+                  <td style={{fontWeight:600}}>{c.label||c.id}</td>
+                  <td>{c.tenant}</td>
+                  <td><span className="chip">{c.payment}</span></td>
+                  <td>£{c.rent}</td>
+                  <td>{c.vat_rent?`£${c.vat_rent}`:"—"}</td>
+                  <td style={{fontSize:12}}>{c.review||"—"}</td>
+                  <td><Pill s={c.status}/></td>
+                  <td>
+                    <div className="fr">
+                      <button className="btn btn-outline btn-sm" onClick={()=>onEdit(c)}>Edit</button>
+                      <button className="btn btn-danger btn-sm" onClick={()=>{if(window.confirm(`Delete ${c.label||c.id}?`)){onDelete(c.id);}}}>🗑️</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+      {(arrears.length>0||leaving.length>0)&&(
+        <div className="card">
+          <div className="ch"><div className="ct">⚠️ Action Required</div></div>
+          <div className="cb">
+            {arrears.map(u=><div key={u.id} className="al-o">🟠 <strong>In Arrears</strong> — Unit {u.id} · {u.tenant} · £{u.rent}/mo<button className="btn btn-outline btn-sm" style={{marginLeft:12}} onClick={()=>onEdit(u)}>Edit</button></div>)}
+            {leaving.map(u=><div key={u.id} className="al-r">🔴 <strong>Leaving</strong> — Unit {u.id} · {u.tenant} · £{u.rent}/mo<button className="btn btn-outline btn-sm" style={{marginLeft:12}} onClick={()=>onEdit(u)}>Edit</button></div>)}
+          </div>
+        </div>
+      )}
+
+      {/* Tasks due soon / overdue */}
+      {(()=>{
+        const tod=new Date();tod.setHours(0,0,0,0);
+        const alertTasks=tasks.filter(t=>{
+          if(t.status==="Done") return false;
+          if(!t.due_date) return false;
+          const d=new Date(t.due_date);
+          const diff=Math.ceil((d-tod)/86400000);
+          return diff<=(t.reminder_days||7);
+        }).sort((a,b)=>new Date(a.due_date)-new Date(b.due_date));
+        if(alertTasks.length===0) return null;
+        const overdueTasks=alertTasks.filter(t=>new Date(t.due_date)<tod);
+        return(
+          <div style={{background:overdueTasks.length>0?"#FFF0EE":"#FFF8E1",border:`1.5px solid ${overdueTasks.length>0?"#FFCDD2":"#FFD54F"}`,borderRadius:8,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"flex-start",gap:10}}>
+            <span style={{fontSize:18}}>🔧</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,color:overdueTasks.length>0?"var(--danger)":"#7A5C00",fontSize:13,marginBottom:4}}>
+                {overdueTasks.length>0?`${overdueTasks.length} Overdue Task${overdueTasks.length!==1?"s":""}`:""}{overdueTasks.length>0&&alertTasks.length>overdueTasks.length?" · ":""}{alertTasks.length>overdueTasks.length?`${alertTasks.length-overdueTasks.length} Task${alertTasks.length-overdueTasks.length!==1?"s":""} Due Soon`:""}
+              </div>
+              <div style={{fontSize:12,color:overdueTasks.length>0?"var(--danger)":"#7A5C00"}}>
+                {alertTasks.slice(0,4).map(t=>(
+                  <span key={t.id} style={{display:"inline-flex",alignItems:"center",gap:4,marginRight:12,marginBottom:2}}>
+                    <strong>{t.title}</strong>
+                    {t.due_date&&<span style={{opacity:0.8}}>· {new Date(t.due_date)<tod?"was ":""}{new Date(t.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>}
+                    {t.assigned_to&&<span style={{opacity:0.7}}>· {t.assigned_to}</span>}
+                  </span>
+                ))}
+                {alertTasks.length>4&&<span style={{opacity:0.7}}>+{alertTasks.length-4} more</span>}
+              </div>
+            </div>
+            <button className="btn btn-sm" style={{fontSize:10,padding:"2px 8px",background:"#7A5C00",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",flexShrink:0}} onClick={()=>onGoTo&&onGoTo("tasks")}>View Tasks →</button>
+          </div>
+        );
+      })()}
+
+      {/* Vacancy match alerts */}
+      {vacancyMatches.length>0&&(
+        <div style={{background:"#EAF3DE",border:"1.5px solid #97C459",borderRadius:8,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"flex-start",gap:10}}>
+          <span style={{fontSize:18}}>🏠</span>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:700,color:"#27500A",fontSize:13,marginBottom:4}}>Vacancy Match — Waiting List</div>
+            <div style={{fontSize:12,color:"#27500A"}}>
+              {vacancyMatches.map(({unit,count})=>(
+                <span key={unit.id} style={{display:"inline-flex",alignItems:"center",gap:6,marginRight:14,marginBottom:4}}>
+                  <strong>{unit.label||unit.id}</strong> is vacant · <strong>{count}</strong> {unit.category} enquir{count===1?"y":"ies"} waiting
+                  <button className="btn btn-sm" style={{fontSize:10,padding:"2px 8px",background:"#27500A",color:"#fff",border:"none",borderRadius:4,cursor:"pointer"}} onClick={()=>onGoTo&&onGoTo("enquiries")}>View Enquiries →</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reserved tenants alert */}
+      {reservedEnquiries.length>0&&(
+        <div style={{background:"#FFF8E1",border:"1.5px solid #F6D860",borderRadius:8,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"flex-start",gap:10}}>
+          <span style={{fontSize:18}}>🔒</span>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:700,color:"#7A5C00",fontSize:13,marginBottom:4}}>Reserved — Awaiting Unit</div>
+            <div style={{fontSize:12,color:"#7A5C00"}}>
+              {reservedEnquiries.map(e=>(
+                <span key={e.id} style={{display:"inline-flex",alignItems:"center",gap:6,marginRight:14,marginBottom:4}}>
+                  <strong>{e.name}</strong> · {e.category}
+                  {e.earmarked_unit&&<span>· earmarked for <strong>{e.earmarked_unit}</strong></span>}
+                  <button className="btn btn-sm" style={{fontSize:10,padding:"2px 8px",background:"#7A5C00",color:"#fff",border:"none",borderRadius:4,cursor:"pointer"}} onClick={()=>onGoTo&&onGoTo("enquiries")}>View Enquiries →</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rent review alerts */}
+      {reviewSoon.length>0&&(
+        <div style={{background:"#FFFBEA",border:"1.5px solid #F6D860",borderRadius:8,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"flex-start",gap:10}}>
+          <span style={{fontSize:18}}>📅</span>
+          <div>
+            <div style={{fontWeight:700,color:"#7A5C00",fontSize:13,marginBottom:4}}>Rent Review Due Soon</div>
+            <div style={{fontSize:12,color:"#7A5C00"}}>
+              {reviewSoon.map(u=>(
+                <span key={u.id} style={{display:"inline-block",marginRight:12}}>
+                  <strong>{u.label||u.id}</strong> {u.tenant?`· ${u.tenant}`:""} · Review: {u.review}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Site Plan ────────────────────────────────────────────────────────────────
+function SitePlan({data,areas=[],onEdit,onAdd,onDelete,onRenameRow,onDeleteRow,onSaveAreaOrder,onAddArea,onSaveUnitOrder}){
+  const [sel,setSel]=useState(null);
+  const [filt,setFilt]=useState("all");
+  const detailRef=useRef(null);
+  const [dragOver,setDragOver]=useState(null);
+  const dragRow=useRef(null);
+  const dragUnit=useRef(null);
+  const [dragOverUnit,setDragOverUnit]=useState(null);
+
+  // Use areas from database
+  const rowOrder=areas.map(a=>a.name);
+
+  function saveRowOrder(newOrder){
+    if(onSaveAreaOrder) onSaveAreaOrder(newOrder);
   }
 
-  function selectUnit(id) {
-    setSel(prev => {
-      if (prev === id) return null;
-      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+  function handleDragStart(e,row){
+    dragRow.current=row;
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain",row);
+  }
+
+  function handleDragOver(e,row){
+    e.preventDefault();
+    e.dataTransfer.dropEffect="move";
+    setDragOver(row);
+  }
+
+  function handleDrop(e,targetRow){
+    e.preventDefault();
+    // Try ref first, fall back to dataTransfer
+    const fromRow=dragRow.current||(()=>{try{return e.dataTransfer.getData("text/plain");}catch{return null;}})();
+    dragRow.current=null;
+    setDragOver(null);
+    if(!fromRow||fromRow===targetRow) return;
+    const newOrder=[...rowOrder];
+    const fromIdx=newOrder.indexOf(fromRow);
+    const toIdx=newOrder.indexOf(targetRow);
+    if(fromIdx<0||toIdx<0) return;
+    const reordered=[...newOrder];
+    reordered.splice(fromIdx,1);
+    reordered.splice(toIdx,0,fromRow);
+    saveRowOrder(reordered);
+  }
+
+  function handleDragEnd(){
+    dragRow.current=null;
+    setDragOver(null);
+  }
+
+  function handleUnitDragStart(e,unit){
+    dragUnit.current=unit;
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("unitId",unit.id);
+  }
+
+  function handleUnitDrop(e,targetId,rowUnits,targetRow){
+    e.preventDefault();
+    e.stopPropagation();
+    const fromUnit=dragUnit.current;
+    if(!fromUnit||fromUnit.id===targetId){setDragOverUnit(null);return;}
+
+    const updates=[];
+    const targetSorted=[...rowUnits].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0));
+    const toIdx=targetSorted.findIndex(u=>u.id===targetId);
+
+    if(fromUnit.row_name===targetRow){
+      // Same area — reorder
+      const withoutFrom=targetSorted.filter(u=>u.id!==fromUnit.id);
+      withoutFrom.splice(toIdx,0,fromUnit);
+      withoutFrom.forEach((u,i)=>updates.push({id:u.id,sort_order:i,row_name:targetRow}));
+    } else {
+      // Cross-area — reindex source
+      data.filter(u=>u.row_name===fromUnit.row_name&&u.id!==fromUnit.id)
+        .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0))
+        .forEach((u,i)=>updates.push({id:u.id,sort_order:i,row_name:u.row_name}));
+      // Insert into target
+      const newTarget=[...targetSorted];
+      newTarget.splice(toIdx<0?newTarget.length:toIdx,0,{...fromUnit,row_name:targetRow});
+      newTarget.forEach((u,i)=>updates.push({id:u.id,sort_order:i,row_name:targetRow}));
+    }
+
+    if(onSaveUnitOrder) onSaveUnitOrder(updates);
+    dragUnit.current=null;
+    setDragOverUnit(null);
+  }
+
+  function selectUnit(id){
+    setSel(prev=>{
+      if(prev===id) return null;
+      setTimeout(()=>detailRef.current?.scrollIntoView({behavior:"smooth",block:"center"}),100);
       return id;
     });
   }
+  const [showAddUnit,setShowAddUnit]=useState(false);
+  const [showAddArea,setShowAddArea]=useState(false);
+  const [editingRow,setEditingRow]=useState(null);
+  const [editingRowName,setEditingRowName]=useState("");
+  const [newAreaName,setNewAreaName]=useState("");
+  const [newUnit,setNewUnit]=useState({id:"",category:"Storage",row_name:"",size:"XL(20ft)",box_no:"",status:"available",tenant:"",rent:""});
 
-  function submitNewUnit() {
-    if (!newUnit.id.trim()) { alert("Please enter a Unit ID"); return; }
-    const exists = stor.find(u => u.id === newUnit.id.trim());
-    if (exists) { alert(`Unit "${newUnit.id.trim()}" already exists in ${exists.row_name || "this area"}. Please choose a different ID.`); return; }
-    onAdd({ ...newUnit, id: newUnit.id.trim(), rent: null, vat_rent: null, email: null, phone: null, label: null, review: null, notes: null, tenant: null });
-    setNewUnit({ id: "", category: "Storage", row_name: "", size: "", box_no: "", status: "available" });
+  const stor=data.filter(d=>d.category==="Storage");
+    const fu=arr=>filt==="all"?arr:arr.filter(u=>u.status===filt);
+  const selU=stor.find(u=>u.id===sel);
+  const nu=k=>e=>setNewUnit(f=>({...f,[k]:e.target.value}));
+
+  function submitNewUnit(){
+    if(!newUnit.id.trim()){alert("Please enter a Unit ID");return;}
+    const exists=stor.find(u=>u.id===newUnit.id.trim());
+    if(exists){alert(`❌ Unit "${newUnit.id.trim()}" already exists in ${exists.row_name||"this area"}. Please choose a different ID.`);return;}
+    onAdd({...newUnit,id:newUnit.id.trim(),rent:newUnit.rent?Number(newUnit.rent):null,vat_rent:null,email:null,phone:null,label:null,section:null,review:null,notes:null});
+    setNewUnit({id:"",category:"Storage",row_name:"",size:"XL(20ft)",box_no:"",status:"available",tenant:"",rent:""});
     setShowAddUnit(false);
   }
 
-  function confirmRenameRow() {
-    if (!editingRowName.trim()) return;
-    onRenameRow(editingRow, editingRowName.trim());
+  function startRenameRow(row){
+    setEditingRow(row);
+    setEditingRowName(row);
+  }
+
+  function confirmRenameRow(){
+    if(!editingRowName.trim()){return;}
+    onRenameRow(editingRow,editingRowName.trim());
     setEditingRow(null);
   }
 
-  function confirmDeleteRow(row) {
-    const units = stor.filter(u => u.row_name === row);
-    const occupied = units.filter(u => u.tenant);
-    const msg = occupied.length > 0
-      ? `Delete "${row}"?\n\nThis area has ${units.length} unit(s), ${occupied.length} of which ${occupied.length === 1 ? "is" : "are"} occupied:\n${occupied.map(u => `• Unit ${u.id} — ${u.tenant}`).join("\n")}\n\nThis cannot be undone.`
-      : `Delete "${row}" and all ${units.length} unit(s) in it?\n\nThis cannot be undone.`;
-    if (window.confirm(msg)) onDeleteRow(row);
+  function confirmDeleteRow(row){
+    const units=stor.filter(u=>u.row_name===row);
+    const occupied=units.filter(u=>u.tenant);
+    const msg=occupied.length>0
+      ? `⚠️ Delete "${row}"?\n\nThis area has ${units.length} unit${units.length!==1?"s":""}, ${occupied.length} of which ${occupied.length===1?"is":"are"} occupied:\n${occupied.map(u=>`• Unit ${u.id} — ${u.tenant}`).join("\n")}\n\nDeleting this area will permanently delete ALL units and tenant records within it. This cannot be undone.`
+      : `Delete "${row}" and all ${units.length} unit${units.length!==1?"s":""} in it?\n\nThis cannot be undone.`;
+    if(window.confirm(msg)){
+      onDeleteRow(row);
+    }
   }
 
-  async function confirmAddArea() {
-    if (!newAreaName.trim()) return;
-    if (onAddArea) await onAddArea(newAreaName.trim());
+  async function confirmAddArea(){
+    if(!newAreaName.trim()){return;}
+    if(onAddArea) await onAddArea(newAreaName.trim());
     setShowAddArea(false);
     setNewAreaName("");
   }
 
-  return (
-    <div className="page">
-      {/* Toolbar */}
-      <div className="sp-toolbar">
-        <Legend />
-        <div className="sp-filters">
-          {["all", ...STATUSES].map(f => (
-            <button key={f} className={`sp-btn ${filt === f ? "active" : ""}`} onClick={() => setFilt(f)}>
-              {f === "all" ? "All" : SL[f]}
+  return(
+    <div>
+      <div className="fb mb16" style={{flexWrap:"wrap",gap:10}}>
+        <Legend/>
+        <div className="fr" style={{flexWrap:"wrap",gap:5}}>
+          {["all",...STATUSES].map(f=>(
+            <button key={f} className="btn btn-sm btn-outline" style={filt===f?{background:"var(--navy)",color:"#fff",borderColor:"var(--navy)"}:{}} onClick={()=>setFilt(f)}>
+              {f==="all"?"All":SL[f]}
             </button>
           ))}
-          {filt === "all" && (
-            <>
-              <button className="sp-btn sp-btn-primary" onClick={() => { setShowAddUnit(s => !s); setShowAddArea(false); }}>
-                {showAddUnit ? "✕ Cancel" : "+ Add Unit"}
-              </button>
-              <button className="sp-btn sp-btn-navy" onClick={() => { setShowAddArea(s => !s); setShowAddUnit(false); }}>
-                {showAddArea ? "✕ Cancel" : "+ Add Area"}
-              </button>
-            </>
-          )}
+          {filt==="all"&&<button className="btn btn-primary btn-sm" onClick={()=>{setShowAddUnit(!showAddUnit);setShowAddArea(false);}}>
+            {showAddUnit?"✕ Cancel":"+ Add Unit"}
+          </button>}
+          {filt==="all"&&<button className="btn btn-navy btn-sm" onClick={()=>{setShowAddArea(!showAddArea);setShowAddUnit(false);}}>
+            {showAddArea?"✕ Cancel":"+ Add Area"}
+          </button>}
         </div>
       </div>
 
-      {/* Add area form */}
-      {showAddArea && (
-        <div className="sp-form">
-          <div className="sp-form-title">Add New Area</div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <input
-              className="onboard-input"
-              style={{ flex: 1, maxWidth: 320 }}
-              value={newAreaName}
-              onChange={e => setNewAreaName(e.target.value)}
-              placeholder="e.g. Row 7, North Block, Main Barn"
-              onKeyDown={e => e.key === "Enter" && confirmAddArea()}
-              autoFocus
-            />
-            <button className="sp-btn sp-btn-primary" onClick={confirmAddArea}>Create Area</button>
+      {showAddArea&&(
+        <div className="add-row-form">
+          <div className="add-row-title">Add New Area / Row</div>
+          <div className="fr" style={{gap:10}}>
+            <input className="sin" style={{flex:1}} value={newAreaName} onChange={e=>setNewAreaName(e.target.value)} placeholder="e.g. Row 7, North Block, New Section"/>
+            <button className="btn btn-primary" onClick={confirmAddArea}>Create Area</button>
           </div>
         </div>
       )}
 
-      {/* Add unit form */}
-      {showAddUnit && (
-        <div className="sp-form" style={{ marginTop: 12 }}>
-          <div className="sp-form-title">Add New Unit to Site Plan</div>
-          <div className="sp-form-grid">
-            <div className="sp-field"><label>Unit ID *</label><input value={newUnit.id} onChange={nu("id")} placeholder="e.g. 73, A4" /></div>
-            <div className="sp-field">
-              <label>Area *</label>
+      {showAddUnit&&(
+        <div className="add-row-form">
+          <div className="add-row-title">Add New Unit to Site Plan</div>
+          <div className="add-row-grid">
+            <div className="arf"><label>Unit ID *</label><input value={newUnit.id} onChange={nu("id")} placeholder="e.g. 73, 74, 75"/></div>
+            <div className="arf"><label>Row / Area *</label>
               <select value={newUnit.row_name} onChange={nu("row_name")}>
                 <option value="">— Select area —</option>
-                {rowOrder.map(r => <option key={r} value={r}>{r}</option>)}
+                {rowOrder.map(r=><option key={r} value={r}>{r}</option>)}
               </select>
             </div>
-            <div className="sp-field">
-              <label>Status</label>
+            <div className="arf"><label>Status</label>
               <select value={newUnit.status} onChange={nu("status")}>
-                {STATUSES.map(s => <option key={s} value={s}>{SL[s]}</option>)}
+                {STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}
               </select>
             </div>
-            <div className="sp-field"><label>Size (optional)</label><input value={newUnit.size} onChange={nu("size")} placeholder="e.g. XL(20ft)" /></div>
+            <div className="arf"><label>Size (optional)</label><input value={newUnit.size} onChange={nu("size")} placeholder="e.g. XL(20ft)"/></div>
           </div>
-          <p style={{ fontSize: 11, color: "var(--sub)", marginTop: 10 }}>Tenant details, rent, and other info can be added by clicking Edit on the unit afterwards.</p>
-          <button className="sp-btn sp-btn-primary" style={{ marginTop: 10 }} onClick={submitNewUnit}>Add Unit</button>
+          <p style={{fontSize:11,color:"var(--sub)",marginTop:10}}>Tenant details, rent, box number and other info can be added by clicking Edit on the unit afterwards.</p>
+          <button className="btn btn-primary" style={{marginTop:10}} onClick={submitNewUnit}>Add Unit</button>
         </div>
       )}
 
-      {/* Area rows */}
-      {rowOrder.map(row => {
-        const all = stor.filter(u => u.row_name === row);
-        const isDragTarget = dragOver === row && dragRow.current && !dragUnit.current;
-        return (
-          <div
-            key={row}
-            className="sp-area"
-            style={{ opacity: isDragTarget ? 0.5 : 1, outline: isDragTarget ? "2px dashed var(--gold)" : "none", borderRadius: 8, transition: "opacity .15s" }}
-            onDragOver={e => { if (dragRow.current && !dragUnit.current) handleAreaDragOver(e, row); else e.preventDefault(); }}
-            onDragEnter={e => { e.preventDefault(); if (dragRow.current && !dragUnit.current) setDragOver(row); }}
-            onDrop={e => { if (dragUnit.current) return; handleAreaDrop(e, row); }}
-            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+      {rowOrder.map(row=>{
+        const all=stor.filter(u=>u.row_name===row);
+        return(
+          <div key={row} style={{marginBottom:20,opacity:dragOver===row&&dragRow.current&&!dragUnit.current?0.5:1,transition:"opacity 0.15s",outline:dragOver===row&&dragRow.current&&!dragUnit.current?"2px dashed var(--gold)":"none",borderRadius:8}}
+            onDragOver={e=>{if(dragRow.current&&!dragUnit.current)handleDragOver(e,row);else e.preventDefault();}}
+            onDragEnter={e=>{e.preventDefault();if(dragRow.current&&!dragUnit.current)setDragOver(row);}}
+            onDrop={e=>{if(dragUnit.current)return;handleDrop(e,row);}}
+            onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget))setDragOver(null);}}
           >
-            <div className="sp-area-header">
-              {editingRow === row ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    value={editingRowName}
-                    onChange={e => setEditingRowName(e.target.value)}
-                    style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "6px 10px", border: "1.5px solid var(--gold)", borderRadius: 7, outline: "none", width: 200 }}
-                    onKeyDown={e => e.key === "Enter" && confirmRenameRow()}
-                    autoFocus
-                  />
-                  <button className="sp-btn sp-btn-primary" style={{ fontSize: 11, padding: "5px 10px" }} onClick={confirmRenameRow}>✓ Save</button>
-                  <button className="sp-btn" style={{ fontSize: 11, padding: "5px 10px" }} onClick={() => setEditingRow(null)}>✕</button>
+            <div className="fb" style={{marginBottom:10,paddingBottom:8,borderBottom:"2px solid var(--gold)"}}>  
+              {editingRow===row?(
+                <div className="fr">
+                  <input className="sin" value={editingRowName} onChange={e=>setEditingRowName(e.target.value)} style={{width:180}}/>
+                  <button className="btn btn-success btn-sm" onClick={confirmRenameRow}>✓ Save</button>
+                  <button className="btn btn-outline btn-sm" onClick={()=>setEditingRow(null)}>✕</button>
                 </div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span
-                    className="sp-drag-handle"
+              ):(
+                <div className="fr">
+                  <span 
                     draggable
-                    onDragStart={e => handleAreaDragStart(e, row)}
-                    onDragEnd={handleAreaDragEnd}
-                    title="Drag to reorder"
-                  >⠿</span>
-                  <span className="sp-area-title">{row}</span>
-                  <span className="sp-area-count">{all.length} units</span>
-                </div>
-              )}
-              {editingRow !== row && filt === "all" && (
-                <div className="sp-area-actions">
-                  <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => { setEditingRow(row); setEditingRowName(row); }}>✏️ Rename</button>
-                  <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => confirmDeleteRow(row)}>🗑️ Delete Area</button>
+                    onDragStart={e=>handleDragStart(e,row)}
+                    onDragEnd={handleDragEnd}
+                    style={{cursor:"grab",color:"var(--sub)",fontSize:16,marginRight:6,padding:"0 4px"}} title="Drag to reorder">⠿</span>
+                  <div className="fr" style={{gap:8,alignItems:"center"}}>
+                    <div style={{fontFamily:"var(--fb)",fontSize:17,fontWeight:700,color:"var(--navy)",letterSpacing:"0.2px"}}>{row}</div>
+                    <div style={{fontSize:11,color:"var(--sub)",fontWeight:500,background:"var(--mist)",border:"1px solid #D8E2EE",borderRadius:20,padding:"2px 8px"}}>{all.length} units</div>
+                  </div>
+                  {filt==="all"&&<button className="btn btn-outline btn-sm" onClick={()=>startRenameRow(row)} title="Rename this area">✏️ Rename</button>}
+                  {filt==="all"&&<button className="btn btn-danger btn-sm" onClick={()=>confirmDeleteRow(row)} title="Delete this area and all its units">🗑️ Delete Area</button>}
                 </div>
               )}
             </div>
-
-            <div className="ug">
-              {fu([...all].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))).map(u => (
-                <div
-                  key={u.id}
-                  draggable={filt === "all"}
-                  onDragStart={e => handleUnitDragStart(e, u)}
-                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverUnit(u.id); }}
-                  onDrop={e => handleUnitDrop(e, u.id, [...all].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), row)}
-                  onDragEnd={() => { dragUnit.current = null; setDragOverUnit(null); }}
-                  style={{ opacity: dragOverUnit === u.id && dragUnit.current?.id !== u.id ? 0.5 : 1, outline: dragOverUnit === u.id && dragUnit.current?.id !== u.id ? "2px dashed var(--gold)" : "none", borderRadius: 8 }}
-                >
-                  <UCell u={u} sel={sel === u.id} onClick={() => selectUnit(u.id)} />
-                </div>
-              ))}
-            </div>
+            <div className="ug">{fu([...all].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0))).map(u=>(
+              <div key={u.id}
+                draggable={filt==="all"}
+                onDragStart={e=>handleUnitDragStart(e,u)}
+                onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOverUnit(u.id);}}
+                onDrop={e=>handleUnitDrop(e,u.id,[...all].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)),row)}
+                onDragEnd={()=>{dragUnit.current=null;setDragOverUnit(null);}}
+                style={{opacity:dragOverUnit===u.id&&dragUnit.current?.id!==u.id?0.5:1,outline:dragOverUnit===u.id&&dragUnit.current?.id!==u.id?"2px dashed var(--gold)":"none",borderRadius:8}}
+              >
+                <UCell u={u} sel={sel===u.id} onClick={()=>selectUnit(u.id)}/>
+              </div>
+            ))}</div>
           </div>
         );
       })}
 
-      {/* Unassigned units */}
-      {stor.filter(u => !u.row_name).length > 0 && (
-        <div className="sp-area">
-          <div className="sp-area-header">
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 700, color: "var(--danger)" }}>⚠️ Unassigned</span>
-              <span className="sp-area-count" style={{ background: "#FFF0EE", borderColor: "#FFCDD2", color: "var(--danger)" }}>{stor.filter(u => !u.row_name).length} units — no area set</span>
+
+
+      {stor.filter(u=>!u.row_name).length>0&&(
+        <div style={{marginBottom:16}}>
+          <div className="fb" style={{marginBottom:8}}>
+            <div className="fr" style={{gap:8,alignItems:"center"}}>
+              <div style={{fontFamily:"var(--fh)",fontSize:15,fontWeight:800,color:"#C0392B",letterSpacing:"0.3px"}}>⚠️ Unassigned</div>
+              <div style={{fontSize:11,color:"var(--sub)",fontWeight:500,background:"#FFF0EE",border:"1px solid #FFCDD2",borderRadius:20,padding:"2px 8px"}}>{stor.filter(u=>!u.row_name).length} units — no area set</div>
             </div>
           </div>
-          <div className="ug">
-            {fu(stor.filter(u => !u.row_name)).map(u => <UCell key={u.id} u={u} sel={sel === u.id} onClick={() => selectUnit(u.id)} />)}
-          </div>
+          <div className="ug">{fu(stor.filter(u=>!u.row_name)).map(u=><UCell key={u.id} u={u} sel={sel===u.id} onClick={()=>selectUnit(u.id)}/>)}</div>
         </div>
       )}
 
-      {/* Empty state */}
-      {rowOrder.length === 0 && (
-        <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--sub)" }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🏭</div>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 18, fontWeight: 600, marginBottom: 8, color: "var(--text)" }}>No areas yet</div>
-          <div style={{ fontSize: 14, marginBottom: 24 }}>Start by adding an area, then add your storage units to it.</div>
-          <button className="sp-btn sp-btn-navy" onClick={() => setShowAddArea(true)}>+ Add Your First Area</button>
-        </div>
-      )}
-
-      {/* Detail panel */}
-      {selU && (
-        <div className="sp-detail" ref={detailRef}>
-          <div className="sp-detail-header">
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15 }}>Unit {selU.label || selU.id}</span>
-              <Pill s={selU.status} />
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="sp-btn sp-btn-primary" onClick={() => onEdit(selU)}>✏️ Edit</button>
-              <button className="sp-btn sp-btn-danger" onClick={() => {
-                const msg = selU.tenant
-                  ? `Delete Unit ${selU.id}? This cannot be undone.`
-                  : `Permanently delete empty Unit ${selU.id}? This cannot be undone.`;
-                if (window.confirm(msg)) { onDelete(selU.id); setSel(null); }
-              }}>🗑️ Delete</button>
-              <button className="sp-btn" onClick={() => setSel(null)}>✕ Close</button>
+      {selU&&(
+        <div className="dpanel" ref={detailRef}>
+          <div className="fb mb16">
+            <span style={{fontFamily:"var(--fh)",fontWeight:700,fontSize:15}}>Unit {selU.id}</span>
+            <div className="fr">
+              <Pill s={selU.status}/>
+              <button className="btn btn-primary btn-sm" onClick={()=>onEdit(selU)}>✏️ Edit</button>
+              <button className="btn btn-danger btn-sm" onClick={()=>{
+                const isOccupied=selU.tenant||["occupied","new","arrears","leaving"].includes(selU.status);
+                if(isOccupied){
+                  alert(`⛔ Cannot delete Unit ${selU.id}\n\nThis unit has a tenant (${selU.tenant||selU.status}). Archive the tenant first before deleting the unit.`);
+                  return;
+                }
+                if(window.confirm(`Permanently delete empty Unit ${selU.id} from the site plan?\n\nThis cannot be undone.`)){
+                  onDelete(selU.id);setSel(null);
+                }
+              }}>🗑️ Delete Unit</button>
+              <button className="btn btn-outline btn-sm" onClick={()=>setSel(null)}>✕ Close</button>
             </div>
           </div>
-          <div className="sp-detail-grid">
-            {[
-              ["Box Ref", selU.box_no || "—"],
-              ["Size", selU.size || "—"],
-              ["Area", selU.row_name || "—"],
-              ["Tenant", selU.tenant || "Vacant"],
-              ["Payment", selU.payment || "—"],
-              ["Rent (ex-VAT)", selU.rent ? "£" + selU.rent : "—"],
-              ["Rent (inc-VAT)", selU.vat_rent ? "£" + selU.vat_rent : "—"],
-              ["Email", selU.email || "—"],
-              ["Phone", selU.phone || "—"],
-              ["Key / Lock No.", selU.key_number || "—"],
-              ["Lock Deposit Paid", selU.lock_deposit_paid || "—"],
-              ["Lock Deposit Amt", selU.lock_deposit_amount ? "£" + selU.lock_deposit_amount : "—"],
-              ["Tenant Deposit", selU.tenant_deposit ? "£" + selU.tenant_deposit : "—"],
-              ["Move-in", selU.move_in_date || "—"],
-              ["Notes", selU.notes || "—"],
-            ].map(([k, v]) => (
-              <div key={k}>
-                <div className="sp-detail-label">{k}</div>
-                <div className="sp-detail-val">{v}</div>
-              </div>
+          <div className="dgrid">
+            {[["Box Ref",selU.box_no||"—"],["Size",selU.size||"—"],["Row",selU.row_name||"—"],["Tenant",selU.tenant||"Vacant"],["Payment",selU.payment||"—"],["Ex-VAT",selU.rent?"£"+selU.rent:"—"],["Inc-VAT",selU.vat_rent?"£"+selU.vat_rent:"—"],["Email",selU.email||"—"],["Phone",selU.phone||"—"],["Key/Lock No.",selU.key_number||"—"],["Lock Deposit Paid",selU.lock_deposit_paid||"—"],["Lock Deposit Amt",selU.lock_deposit_amount?"£"+selU.lock_deposit_amount:"—"],["Tenant Deposit",selU.tenant_deposit?"£"+selU.tenant_deposit:"—"],["Address",selU.address||"—"],["Notes",selU.notes||"—"]].map(([k,v])=>(
+              <div key={k}><div className="dlabel">{k}</div><div className="dval">{v}</div></div>
             ))}
           </div>
         </div>
@@ -2199,230 +1606,187 @@ function SitePlanPage({ data, areas, onEdit, onAdd, onDelete, onRenameRow, onDel
   );
 }
 
-// ─── Tenants Page ────────────────────────────────────────────────────────────
-const DEFAULT_COLS = [
-  { key: "unit",     label: "Unit" },
-  { key: "category", label: "Category" },
-  { key: "tenant",   label: "Tenant" },
-  { key: "size",     label: "Size" },
-  { key: "payment",  label: "Payment" },
-  { key: "exvat",    label: "Ex-VAT" },
-  { key: "incvat",   label: "Inc-VAT" },
-  { key: "email",    label: "Email" },
-  { key: "status",   label: "Status" },
+// ─── All Tenants ──────────────────────────────────────────────────────────────
+const DEFAULT_COLS=[
+  {key:"unit",label:"Unit"},
+  {key:"category",label:"Category"},
+  {key:"tenant",label:"Tenant"},
+  {key:"size",label:"Size"},
+  {key:"payment",label:"Payment"},
+  {key:"exvat",label:"Ex-VAT"},
+  {key:"incvat",label:"Inc-VAT"},
+  {key:"email",label:"Email"},
+  {key:"status",label:"Status"},
 ];
 
-function TenantsPage({ data, onEdit, onAdd, onArchive, setPage }) {
-  const [q, setQ] = useState("");
-  const [filt, setFilt] = useState("all");
-  const [cat, setCat] = useState("all");
-  const [sortKey, setSortKey] = useState(null);
-  const [sortDir, setSortDir] = useState("asc");
-  const [selected, setSelected] = useState(new Set());
-  const [cols, setCols] = useState(() => {
-    try { const s = localStorage.getItem("cerect_col_order"); return s ? JSON.parse(s) : DEFAULT_COLS; } catch { return DEFAULT_COLS; }
+function Tenants({data,onEdit,onAdd,onArchive}){
+  const [q,setQ]=useState("");
+  const [filt,setFilt]=useState("all");
+  const [cat,setCat]=useState("all");
+  const [sortKey,setSortKey]=useState(null);
+  const [sortDir,setSortDir]=useState("asc");
+  const [selected,setSelected]=useState(new Set());
+
+  function toggleSelect(id){setSelected(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});}
+  function toggleAll(){setSelected(s=>s.size===sorted.length?new Set():new Set(sorted.map(t=>t.id)));}
+  function clearSelected(){setSelected(new Set());}
+
+  function handleSort(key){
+    if(sortKey===key) setSortDir(d=>d==="asc"?"desc":"asc");
+    else{setSortKey(key);setSortDir("asc");}
+  }
+  function sortArrow(key){
+    if(sortKey!==key) return <span style={{opacity:0.25,marginLeft:3}}>↕</span>;
+    return <span style={{marginLeft:3}}>{sortDir==="asc"?"↑":"↓"}</span>;
+  }
+  const [cols,setCols]=useState(()=>{
+    try{const s=localStorage.getItem("cam_col_order");return s?JSON.parse(s):DEFAULT_COLS;}catch{return DEFAULT_COLS;}
   });
-  const dragCol = useRef(null);
-  const [dragOverCol, setDragOverCol] = useState(null);
+  const dragCol=useRef(null);
+  const [dragOverCol,setDragOverCol]=useState(null);
 
-  function toggleSelect(id) { setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
-  function toggleAll() { setSelected(s => s.size === sorted.length ? new Set() : new Set(sorted.map(t => t.id))); }
-  function clearSelected() { setSelected(new Set()); }
-
-  function handleSort(key) {
-    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortKey(key); setSortDir("asc"); }
-  }
-
-  function sortArrow(key) {
-    if (sortKey !== key) return <span style={{ opacity: 0.25, marginLeft: 3 }}>↕</span>;
-    return <span style={{ marginLeft: 3 }}>{sortDir === "asc" ? "↑" : "↓"}</span>;
-  }
-
-  function handleColDragStart(e, key) { dragCol.current = key; e.dataTransfer.effectAllowed = "move"; }
-  function handleColDragOver(e, key) { e.preventDefault(); setDragOverCol(key); }
-  function handleColDrop(e, targetKey) {
+  function handleColDragStart(e,key){dragCol.current=key;e.dataTransfer.effectAllowed="move";}
+  function handleColDragOver(e,key){e.preventDefault();setDragOverCol(key);}
+  function handleColDrop(e,targetKey){
     e.preventDefault();
-    if (!dragCol.current || dragCol.current === targetKey) return;
-    const newCols = [...cols];
-    const fromIdx = newCols.findIndex(c => c.key === dragCol.current);
-    const toIdx = newCols.findIndex(c => c.key === targetKey);
-    newCols.splice(fromIdx, 1);
-    newCols.splice(toIdx, 0, cols[fromIdx]);
+    if(!dragCol.current||dragCol.current===targetKey) return;
+    const newCols=[...cols];
+    const fromIdx=newCols.findIndex(c=>c.key===dragCol.current);
+    const toIdx=newCols.findIndex(c=>c.key===targetKey);
+    newCols.splice(fromIdx,1);
+    newCols.splice(toIdx,0,cols[fromIdx]);
     setCols(newCols);
-    try { localStorage.setItem("cerect_col_order", JSON.stringify(newCols)); } catch {}
-    dragCol.current = null;
+    try{localStorage.setItem("cam_col_order",JSON.stringify(newCols));}catch{}
+    dragCol.current=null;
     setDragOverCol(null);
   }
-  function handleColDragEnd() { dragCol.current = null; setDragOverCol(null); }
+  function handleColDragEnd(){dragCol.current=null;setDragOverCol(null);}
 
-  const filtered = data.filter(t => {
-    const ms = filt === "all" || t.status === filt;
-    const mc = cat === "all" || t.category === cat;
-    const mq = !q ||
-      (t.tenant || "").toLowerCase().includes(q.toLowerCase()) ||
-      (t.id || "").toLowerCase().includes(q.toLowerCase()) ||
-      (t.email || "").toLowerCase().includes(q.toLowerCase()) ||
-      (t.label || "").toLowerCase().includes(q.toLowerCase());
-    return ms && mc && mq;
+  const filtered=data.filter(t=>{
+    const ms=filt==="all"||t.status===filt;
+    const mc=cat==="all"||t.category===cat;
+    const mq=!q||(t.tenant||"").toLowerCase().includes(q.toLowerCase())||(t.id||"").toLowerCase().includes(q.toLowerCase())||(t.email||"").toLowerCase().includes(q.toLowerCase());
+    return ms&&mc&&mq;
   });
+  const rev=filtered.filter(t=>t.rent&&["occupied","arrears","new"].includes(t.status)).reduce((a,b)=>a+(Number(b.rent)||0),0);
 
-  const rev = filtered
-    .filter(t => t.rent && ["occupied", "arrears", "new"].includes(t.status))
-    .reduce((a, b) => a + (Number(b.rent) || 0), 0);
-
-  const sorted = sortKey ? [...filtered].sort((a, b) => {
+  const sorted = sortKey ? [...filtered].sort((a,b)=>{
     let av, bv;
-    if (sortKey === "exvat" || sortKey === "incvat") {
-      av = Number(sortKey === "exvat" ? a.rent : a.vat_rent) || 0;
-      bv = Number(sortKey === "exvat" ? b.rent : b.vat_rent) || 0;
-    } else if (sortKey === "tenant") {
-      av = (a.tenant || "").toLowerCase(); bv = (b.tenant || "").toLowerCase();
-    } else if (sortKey === "unit") {
-      av = (a.label || a.id || "").toLowerCase(); bv = (b.label || b.id || "").toLowerCase();
+    if(sortKey==="exvat"||sortKey==="incvat"){
+      av=Number(sortKey==="exvat"?a.rent:a.vat_rent)||0;
+      bv=Number(sortKey==="exvat"?b.rent:b.vat_rent)||0;
+    } else if(sortKey==="tenant"){
+      av=(a.tenant||"").toLowerCase(); bv=(b.tenant||"").toLowerCase();
+    } else if(sortKey==="unit"){
+      av=(a.label||a.id||"").toLowerCase(); bv=(b.label||b.id||"").toLowerCase();
+    } else if(sortKey==="status"){
+      av=a.status||""; bv=b.status||"";
+    } else if(sortKey==="category"){
+      av=a.category||""; bv=b.category||"";
     } else {
-      av = (a[sortKey] || "").toString().toLowerCase(); bv = (b[sortKey] || "").toString().toLowerCase();
+      av=(a[sortKey]||"").toString().toLowerCase(); bv=(b[sortKey]||"").toString().toLowerCase();
     }
-    if (av < bv) return sortDir === "asc" ? -1 : 1;
-    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    if(av<bv) return sortDir==="asc"?-1:1;
+    if(av>bv) return sortDir==="asc"?1:-1;
     return 0;
   }) : filtered;
 
-  function renderCell(t, key) {
-    switch (key) {
-      case "unit":     return <td key={key} style={{ fontFamily: "var(--fh)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.label || t.id}</td>;
-      case "category": return <td key={key}><span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, fontWeight: 500, color: "var(--sub)" }}>{t.category}</span></td>;
-      case "tenant":   return <td key={key} style={{ maxWidth: 180 }}>{t.tenant || <span style={{ color: "var(--sub)" }}>Vacant</span>}</td>;
-      case "size":     return <td key={key} style={{ fontSize: 12 }}>{t.size || "—"}</td>;
-      case "payment":  return <td key={key}>{t.payment ? <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, color: "var(--sub)" }}>{t.payment}</span> : "—"}</td>;
-      case "exvat":    return <td key={key} style={{ fontWeight: 600 }}>{t.rent ? "£" + t.rent : "—"}</td>;
-      case "incvat":   return <td key={key}>{t.vat_rent ? "£" + t.vat_rent : "—"}</td>;
-      case "email":    return <td key={key} style={{ fontSize: 11, color: "var(--sub)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.email || "—"}</td>;
-      case "status":   return <td key={key}><Pill s={t.status} /></td>;
-      default:         return <td key={key}>—</td>;
+  function renderCell(t,key){
+    switch(key){
+      case "unit": return <td key={key} style={{fontFamily:"var(--fh)",fontWeight:700,whiteSpace:"nowrap"}}>{t.label||("Unit "+t.id)}</td>;
+      case "category": return <td key={key}><span className="chip">{t.category}</span></td>;
+      case "tenant": return <td key={key} style={{maxWidth:180}}>{t.tenant||<span style={{color:"var(--sub)"}}>Vacant</span>}</td>;
+      case "size": return <td key={key} style={{fontSize:12}}>{t.size||"—"}</td>;
+      case "payment": return <td key={key}>{t.payment?<span className="chip">{t.payment}</span>:"—"}</td>;
+      case "exvat": return <td key={key} style={{fontWeight:600}}>{t.rent?"£"+t.rent:"—"}</td>;
+      case "incvat": return <td key={key}>{t.vat_rent?"£"+t.vat_rent:"—"}</td>;
+      case "email": return <td key={key} style={{fontSize:11,color:"var(--sub)",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.email||"—"}</td>;
+      case "status": return <td key={key}><Pill s={t.status}/></td>;
+      default: return <td key={key}>—</td>;
     }
   }
 
-  return (
-    <div className="page">
-      {/* Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <input
-            style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "8px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", width: 240, color: "var(--text)" }}
-            placeholder="Search tenant, unit, email…"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-          />
-          {["all", "Storage", "Residential", "Commercial"].map(c => (
-            <button key={c} className={`sp-btn ${cat === c ? "active" : ""}`} onClick={() => setCat(c)}>
-              {c === "all" ? "All" : c}
-            </button>
+  return(
+    <div>
+      <div className="fb mb20" style={{flexWrap:"wrap",gap:10}}>
+        <div className="fr" style={{flexWrap:"wrap",gap:6}}>
+          <input className="sin sinw" placeholder="Search tenant, unit, email…" value={q} onChange={e=>setQ(e.target.value)}/>
+          {["all","Residential","Commercial","Storage"].map(c=>(
+            <button key={c} className="btn btn-sm btn-outline" style={cat===c?{background:"var(--navy)",color:"#fff",borderColor:"var(--navy)"}:{}} onClick={()=>setCat(c)}>{c==="all"?"All Categories":c}</button>
           ))}
-          {["all", ...STATUSES].map(f => (
-            <button key={f} className={`sp-btn ${filt === f ? "active" : ""}`} onClick={() => setFilt(f)}>
-              {f === "all" ? "All Statuses" : SL[f]}
-            </button>
+          {["all",...STATUSES].map(f=>(
+            <button key={f} className="btn btn-sm btn-outline" style={filt===f?{background:"#1A7F5A",color:"#fff",borderColor:"#1A7F5A"}:{}} onClick={()=>setFilt(f)}>{f==="all"?"All Statuses":SL[f]}</button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button className="sp-btn" onClick={() => { setCols(DEFAULT_COLS); try { localStorage.removeItem("cerect_col_order"); } catch {} }}>↺ Reset</button>
-          <button className="sp-btn sp-btn-primary" onClick={() => onAdd("Residential")}>+ Residential</button>
-          <button className="sp-btn sp-btn-navy" onClick={() => onAdd("Commercial")}>+ Commercial</button>
+        <div className="fr" style={{gap:6}}>
+          <button className="btn btn-outline btn-sm" onClick={()=>{setCols(DEFAULT_COLS);try{localStorage.removeItem("cam_col_order");}catch{}}} title="Reset column order">↺ Reset Columns</button>
+          <div style={{fontSize:12,color:"#7A5C00",padding:"8px 14px",background:"#FFFBEA",border:"1.5px solid #F6D860",borderRadius:8,fontWeight:500}}>
+            💡 To add a storage tenant, click a vacant unit on the <span style={{color:"var(--navy)",fontWeight:700,textDecoration:"underline",cursor:"pointer"}} onClick={()=>window.__camSetPage&&window.__camSetPage("site")}>Site Plan</span>
+          </div>
         </div>
       </div>
-
-      {/* Storage hint */}
-      <div style={{ fontSize: 12, color: "#7A5C00", padding: "8px 14px", background: "#FFFBEA", border: "1.5px solid #F6D860", borderRadius: 8, fontWeight: 500, marginBottom: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
-        💡 Storage tenants are added via the{" "}
-        <span style={{ color: "var(--navy)", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }} onClick={() => setPage("siteplan")}>
-          Site Plan
-        </span>
-        {" "}· Use the buttons above for Residential and Commercial properties
-      </div>
-
-      {/* Bulk selection bar */}
-      {selected.size > 0 && (
-        <div style={{ background: "#EEF4FF", border: "1.5px solid #B8D0F8", borderRadius: 8, padding: "10px 16px", marginBottom: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <span style={{ fontWeight: 600, fontSize: 13, color: "var(--navy)" }}>{selected.size} selected</span>
-          <button className="sp-btn" onClick={() => {
-            if (!window.confirm(`Archive ${selected.size} tenant(s)?`)) return;
-            selected.forEach(id => onArchive(id));
+      {selected.size>0&&(
+        <div style={{background:"#EEF4FF",border:"1.5px solid #B8D0F8",borderRadius:8,padding:"10px 16px",marginBottom:10,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <span style={{fontWeight:600,fontSize:13,color:"var(--navy)"}}>{selected.size} selected</span>
+          <button className="btn btn-outline btn-sm" onClick={()=>{
+            if(!window.confirm(`Archive ${selected.size} tenant(s)?`)) return;
+            selected.forEach(id=>onArchive(id));
             clearSelected();
           }}>📦 Archive selected</button>
-          <button className="sp-btn sp-btn-danger" onClick={() => {
-            if (!window.confirm(`Delete ${selected.size} tenant(s)? This cannot be undone.`)) return;
-            selected.forEach(id => onArchive(id));
+          <button className="btn btn-outline btn-sm" style={{color:"var(--danger)"}} onClick={()=>{
+            if(!window.confirm(`Delete ${selected.size} tenant(s)? This cannot be undone.`)) return;
+            selected.forEach(id=>onArchive(id));
             clearSelected();
           }}>🗑️ Delete selected</button>
-          <button className="sp-btn" onClick={clearSelected}>✕ Clear</button>
+          <button className="btn btn-outline btn-sm" onClick={clearSelected}>✕ Clear</button>
         </div>
       )}
-
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: 32 }}>
-                  <input type="checkbox" checked={selected.size === sorted.length && sorted.length > 0} onChange={toggleAll} />
-                </th>
-                {cols.map(col => (
-                  <th
-                    key={col.key}
-                    draggable
-                    onDragStart={e => handleColDragStart(e, col.key)}
-                    onDragOver={e => handleColDragOver(e, col.key)}
-                    onDrop={e => handleColDrop(e, col.key)}
-                    onDragEnd={handleColDragEnd}
-                    onClick={() => handleSort(col.key)}
-                    style={{ cursor: "pointer", userSelect: "none", opacity: dragOverCol === col.key ? 0.4 : 1, whiteSpace: "nowrap" }}
-                    title="Click to sort · Drag to reorder"
-                  >
-                    <span style={{ marginRight: 4, opacity: 0.35 }}>⠿</span>
-                    {col.label}{sortArrow(col.key)}
-                  </th>
-                ))}
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={cols.length + 2} style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
-                    {data.length === 0 ? "No tenants yet — add areas and units on the Site Plan to get started." : "No tenants match your filters."}
-                  </td>
-                </tr>
-              )}
-              {sorted.slice(0, 200).map((t, i) => (
-                <tr key={i} style={{ background: selected.has(t.id) ? "#F0F6FF" : "" }}>
-                  <td style={{ padding: "11px 14px" }}>
-                    <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} />
-                  </td>
-                  {cols.map(col => renderCell(t, col.key))}
-                  <td>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => onEdit(t)}>Edit</button>
-                      <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => onArchive(t.id)} title="Archive">📦</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ padding: "9px 16px", fontSize: 12, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>
-          {sorted.length} records · £{rev.toLocaleString()}/mo filtered revenue ·{" "}
-          <span style={{ opacity: 0.6 }}>Click column headers to sort · Drag to reorder</span>
+      <div className="card">
+        <div className="tw"><table>
+          <thead><tr>
+            <th style={{width:32}}>
+              <input type="checkbox" checked={selected.size===sorted.length&&sorted.length>0} onChange={toggleAll} title="Select all"/>
+            </th>
+            {cols.map(col=>(
+              <th key={col.key}
+                draggable
+                onDragStart={e=>handleColDragStart(e,col.key)}
+                onDragOver={e=>handleColDragOver(e,col.key)}
+                onDrop={e=>handleColDrop(e,col.key)}
+                onDragEnd={handleColDragEnd}
+                onClick={()=>handleSort(col.key)}
+                style={{cursor:"pointer",userSelect:"none",opacity:dragOverCol===col.key?0.5:1,whiteSpace:"nowrap"}}
+                title="Click to sort · Drag to reorder"
+              >
+                <span style={{marginRight:4,opacity:0.4}}>⠿</span>{col.label}{sortArrow(col.key)}
+              </th>
+            ))}
+            <th></th>
+          </tr></thead>
+          <tbody>{sorted.slice(0,200).map((t,i)=>(
+            <tr key={i} style={{background:selected.has(t.id)?"#F0F6FF":""}}>
+              <td><input type="checkbox" checked={selected.has(t.id)} onChange={()=>toggleSelect(t.id)}/></td>
+              {cols.map(col=>renderCell(t,col.key))}
+              <td>
+                <div className="fr" style={{gap:4}}>
+                  <button className="btn btn-outline btn-sm" onClick={()=>onEdit(t)}>Edit</button>
+                  <button className="btn btn-outline btn-sm" style={{color:"#7B6F3A"}} onClick={()=>onArchive(t.id)} title="Archive this tenant">📦</button>
+                </div>
+              </td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+        <div style={{padding:"9px 16px",fontSize:12,color:"var(--sub)",borderTop:"1px solid #E4EAF2"}}>
+          {sorted.length} records · £{rev.toLocaleString()}/mo filtered revenue · <span style={{opacity:0.6}}>Click column headers to sort · Drag to reorder · Checkbox to select</span>
         </div>
       </div>
     </div>
   );
 }
 
-// ─── Payment helpers ──────────────────────────────────────────────────────────
-async function paymentRecordList(orgId, month, token) {
+// ─── Payments ─────────────────────────────────────────────────────────────────
+// ─── Payment record helpers ──────────────────────────────────────────────────
+async function paymentRecordList(month, token, orgId) {
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/payment_records?org_id=eq.${orgId}&period_month=eq.${month}&order=paid_at.desc`,
     { headers: authH(token) }
@@ -2430,25 +1794,21 @@ async function paymentRecordList(orgId, month, token) {
   if (!r.ok) throw new Error(`${r.status}`);
   return r.json();
 }
-
 async function paymentRecordSave(record, token) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/payment_records`, {
     method: "POST",
-    headers: { ...authH(token), Prefer: "return=representation" },
-    body: JSON.stringify(record),
+    headers: { ...authH(record._token || token), Prefer: "return=representation" },
+    body: JSON.stringify(record)
   });
   if (!r.ok) throw new Error(`${r.status}`);
   return r.json();
 }
-
 async function paymentRecordDelete(id, token) {
   await fetch(`${SUPABASE_URL}/rest/v1/payment_records?id=eq.${id}`, {
-    method: "DELETE",
-    headers: authH(token),
+    method: "DELETE", headers: authH(token)
   });
 }
-
-async function paymentRecordHistory(orgId, tenantId, token) {
+async function paymentRecordHistory(tenantId, token, orgId) {
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/payment_records?org_id=eq.${orgId}&tenant_id=eq.${encodeURIComponent(tenantId)}&order=period_month.desc&limit=24`,
     { headers: authH(token) }
@@ -2457,9 +1817,9 @@ async function paymentRecordHistory(orgId, tenantId, token) {
 }
 
 // ─── Payments Page ────────────────────────────────────────────────────────────
-function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
+function Payments({data, token, showToast, onStatusUpdate, orgId}){
   const now = new Date();
-  const [viewMonth, setViewMonth] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`);
+  const [viewMonth, setViewMonth] = useState(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`);
   const [records, setRecords] = useState([]);
   const [loadingRec, setLoadingRec] = useState(false);
   const [markingId, setMarkingId] = useState(null);
@@ -2467,323 +1827,322 @@ function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [notesModal, setNotesModal] = useState(null);
-  const [notesVal, setNotesVal] = useState("");
-  const [clearArrears, setClearArrears] = useState(true);
+  const [dbError, setDbError] = useState(false);
 
-  const active = data.filter(u => ["occupied", "new", "arrears"].includes(u.status) && u.rent);
+  const active = data.filter(u => ["occupied","new","arrears"].includes(u.status) && u.rent);
 
   useEffect(() => {
-    if (!token || !orgId) return;
+    if (!token) return;
     setLoadingRec(true);
-    paymentRecordList(orgId, viewMonth, token)
-      .then(r => setRecords(Array.isArray(r) ? r : []))
-      .catch(() => setRecords([]))
+    setDbError(false);
+    paymentRecordList(viewMonth, token, orgId)
+      .then(r => { setRecords(Array.isArray(r) ? r : []); })
+      .catch(e => { console.warn("payment_records fetch failed:", e.message); setDbError(true); setRecords([]); })
       .finally(() => setLoadingRec(false));
-  }, [viewMonth, token, orgId]);
+  }, [viewMonth, token]);
 
-  const monthLabel = m => {
+  const monthLabel = (m) => {
     const [y, mo] = m.split("-");
-    return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-GB", { month: "long", year: "numeric" });
+    return new Date(Number(y), Number(mo)-1, 1).toLocaleString("en-GB", {month:"long", year:"numeric"});
   };
-
   const prevMonth = () => {
     const [y, mo] = viewMonth.split("-").map(Number);
-    const d = new Date(y, mo - 2, 1);
-    setViewMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    const d = new Date(y, mo-2, 1);
+    setViewMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
   };
-
   const nextMonth = () => {
     const [y, mo] = viewMonth.split("-").map(Number);
     const d = new Date(y, mo, 1);
-    setViewMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    setViewMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
   };
-
-  const isCurrentMonth = viewMonth === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const isOverdueMonth = isCurrentMonth && now.getDate() > 7;
+  const isCurrentMonth = viewMonth === `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
 
   const paidIds = new Set(records.map(r => r.tenant_id));
   const paid = active.filter(u => paidIds.has(u.id));
   const unpaid = active.filter(u => !paidIds.has(u.id));
-  const totalRent = active.reduce((a, b) => a + (Number(b.rent) || 0), 0);
-  const totalCollected = paid.reduce((a, b) => a + (Number(b.rent) || 0), 0);
-  const totalOutstanding = unpaid.reduce((a, b) => a + (Number(b.rent) || 0), 0);
-  const pct = totalRent > 0 ? Math.round(totalCollected / totalRent * 100) : 0;
+  const totalRent = active.reduce((a,b) => a+(Number(b.rent)||0), 0);
+  const totalCollected = paid.reduce((a,b) => a+(Number(b.rent)||0), 0);
+  const totalOutstanding = unpaid.reduce((a,b) => a+(Number(b.rent)||0), 0);
 
-  const getRecord = uid => records.find(r => r.tenant_id === uid);
+  // Overdue = unpaid and we're past the 7th of the month (only meaningful for current month)
+  const dayOfMonth = now.getDate();
+  const isOverdueMonth = isCurrentMonth && dayOfMonth > 7;
+  const overdueCount = isCurrentMonth ? unpaid.length : 0;
 
-  const sortedActive = [
-    ...unpaid.sort((a, b) => (a.status === "arrears" ? -1 : 0) - (b.status === "arrears" ? -1 : 0)),
-    ...paid,
-  ];
-
-  async function handleMarkPaid(unit, notes, doClearArrears) {
+  async function handleMarkPaid(unit, payload="") {
+    const notes = typeof payload === "object" ? (payload.notes||"") : (payload||"");
+    const clearArrears = typeof payload === "object" ? !!payload.clearArrears : false;
     setMarkingId(unit.id);
     try {
       const rec = {
-        org_id: orgId,
         tenant_id: unit.id,
         period_month: viewMonth,
-        amount: Number(unit.rent) || 0,
-        method: unit.payment || "",
-        notes: notes || "",
-        paid_at: new Date().toISOString(),
+        amount: Number(unit.rent)||0,
+        method: unit.payment||"",
+        notes: notes,
+        paid_at: new Date().toISOString()
       };
       const saved = await paymentRecordSave(rec, token);
+      // saved may be an array (Supabase returns array for POST with return=representation)
       const record = Array.isArray(saved) ? saved[0] : saved;
-      if (record?.id) {
+      if (record && record.id) {
         setRecords(r => [...r, record]);
-        if (unit.status === "arrears" && doClearArrears && onStatusUpdate) {
+        setDbError(false);
+        // If arrears and user chose to clear, update status to occupied
+        if(unit.status==="arrears" && clearArrears && onStatusUpdate){
           await onStatusUpdate(unit.id, "occupied");
-          toast(`${unit.tenant || unit.id} marked paid · arrears cleared`, "success");
+          showToast(`✅ ${unit.tenant||unit.id} marked as paid · arrears status cleared`);
         } else {
-          toast(`${unit.tenant || unit.id} marked as paid`, "success");
+          showToast(`✅ ${unit.tenant||unit.id} marked as paid`);
         }
       } else {
-        toast("Save failed — please try again", "error");
+        showToast("❌ Save failed — please try again");
       }
-    } catch (e) {
-      toast("Save failed: " + e.message, "error");
+    } catch(e) {
+      console.warn("handleMarkPaid error:", e.message);
+      showToast("❌ Save failed: " + e.message);
     }
     setMarkingId(null);
   }
 
   async function handleUnmark(unit) {
-    const rec = getRecord(unit.id);
+    const rec = records.find(r => r.tenant_id === unit.id);
     if (!rec) return;
-    if (!window.confirm(`Remove payment record for ${unit.tenant || unit.id} for ${monthLabel(viewMonth)}?`)) return;
+    if (!window.confirm(`Remove payment record for ${unit.tenant||unit.id} for ${monthLabel(viewMonth)}?`)) return;
     await paymentRecordDelete(rec.id, token);
     setRecords(r => r.filter(x => x.id !== rec.id));
-    toast("Payment record removed", "success");
+    showToast("↩️ Payment record removed");
   }
 
   async function openHistory(unit) {
     setHistoryTenant(unit);
     setHistoryLoading(true);
-    const h = await paymentRecordHistory(orgId, unit.id, token);
+    const h = await paymentRecordHistory(unit.id, token, orgId);
     setHistory(Array.isArray(h) ? h : []);
     setHistoryLoading(false);
   }
 
   function exportReconciliation() {
-    const rows = [["Unit", "Tenant", "Payment Method", "Rent/mo", "Status", "Paid", "Date Paid", "Reference"]];
+    const rows = [
+      ["Unit", "Tenant", "Payment Method", "Rent/mo", "Status", "Paid", "Date Paid", "Reference"]
+    ];
     sortedActive.forEach(u => {
       const rec = getRecord(u.id);
       rows.push([
-        u.label || u.id, u.tenant || "", u.payment || "", u.rent || "",
-        SL[u.status] || u.status,
+        u.id,
+        u.tenant||"",
+        u.payment||"",
+        u.rent||"",
+        SL[u.status]||u.status,
         rec ? "Yes" : "No",
         rec?.paid_at ? new Date(rec.paid_at).toLocaleDateString("en-GB") : "",
-        rec?.notes || "",
+        rec?.notes||""
       ]);
     });
-    import("xlsx").then(({ default: XLSX }) => {
-      const ws = XLSX.utils.aoa_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
-      XLSX.writeFile(wb, `Cerect_Payments_${viewMonth}.xlsx`);
-    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
+    XLSX.writeFile(wb, `CamStorage_Payments_${viewMonth}.xlsx`);
   }
 
+  const getRecord = (uid) => records.find(r => r.tenant_id === uid);
+
+  // Sort: unpaid first (arrears at top), then paid
+  const sortedActive = [
+    ...unpaid.sort((a,b) => (a.status==="arrears"?-1:0)-(b.status==="arrears"?-1:0)),
+    ...paid
+  ];
+
   return (
-    <div className="page">
+    <div>
       {/* Month navigator */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="sp-btn" onClick={prevMonth}>← Prev</button>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", minWidth: 180, textAlign: "center" }}>
-            {monthLabel(viewMonth)}
-          </div>
-          <button className="sp-btn" onClick={nextMonth} disabled={isCurrentMonth}>Next →</button>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <button className="btn btn-outline btn-sm" onClick={prevMonth}>← Prev</button>
+          <div style={{fontFamily:"var(--fh)",fontSize:20,fontWeight:700,color:"var(--navy)",minWidth:180,textAlign:"center"}}>{monthLabel(viewMonth)}</div>
+          <button className="btn btn-outline btn-sm" onClick={nextMonth} disabled={isCurrentMonth}>Next →</button>
         </div>
-        {isCurrentMonth && isOverdueMonth && unpaid.length > 0 && (
-          <div style={{ background: "#FFF0EE", border: "1.5px solid #FFCDD2", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "var(--danger)", fontWeight: 600 }}>
-            ⚠️ {unpaid.length} tenant{unpaid.length !== 1 ? "s" : ""} not yet marked paid
-          </div>
-        )}
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          {isCurrentMonth && isOverdueMonth && overdueCount > 0 && (
+            <div style={{background:"#FFF0EE",border:"1.5px solid #FFCDD2",borderRadius:8,padding:"7px 14px",fontSize:13,color:"var(--danger)",fontWeight:600}}>
+              ⚠️ {overdueCount} tenant{overdueCount!==1?"s":""} not yet marked paid
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* KPI cards */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", marginBottom: 16 }}>
-        <div className="kpi-card">
-          <div className="kpi-label">Collected</div>
-          <div className="kpi-value" style={{ color: "var(--success)" }}>£{totalCollected.toLocaleString()}</div>
-          <div className="kpi-meta">{paid.length} of {active.length} tenants</div>
+      {dbError && (
+        <div style={{background:"#FFF8E1",border:"1.5px solid #FFD54F",borderRadius:8,padding:"14px 18px",marginBottom:18,fontSize:13,color:"#5D4037"}}>
+          <strong>⚙️ One-time setup required</strong><br/>
+          The payment tracking table doesn't exist yet in your database. Run this SQL in your <a href="https://supabase.com/dashboard/project/lbealsgloqoepazfrgbj/sql/new" target="_blank" rel="noreferrer" style={{color:"var(--navy)"}}>Supabase SQL editor</a>:<br/><br/>
+          <code style={{display:"block",background:"#F5F5F5",padding:"10px 12px",borderRadius:6,fontSize:12,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{"create table payment_records (\n  id uuid primary key default gen_random_uuid(),\n  tenant_id text not null,\n  period_month text not null,\n  amount numeric,\n  method text,\n  notes text,\n  paid_at timestamptz,\n  created_at timestamptz default now(),\n  unique(tenant_id, period_month)\n);\nalter table payment_records disable row level security;"}</code>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-label">Outstanding</div>
-          <div className="kpi-value" style={{ color: totalOutstanding > 0 ? "var(--danger)" : "var(--success)" }}>£{totalOutstanding.toLocaleString()}</div>
-          <div className="kpi-meta">{unpaid.length} tenant{unpaid.length !== 1 ? "s" : ""} remaining</div>
+      )}
+
+      {/* Summary cards */}
+      <div className="kg" style={{gridTemplateColumns:"repeat(3,1fr)",marginBottom:20}}>
+        <div className="kc">
+          <div className="kl">Collected</div>
+          <div className="kv" style={{color:"var(--success)"}}>£{totalCollected.toLocaleString()}</div>
+          <div className="ks">{paid.length} of {active.length} tenants</div>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-label">Monthly Total</div>
-          <div className="kpi-value">£{totalRent.toLocaleString()}</div>
-          <div className="kpi-meta">{active.length} active tenants</div>
+        <div className="kc">
+          <div className="kl">Outstanding</div>
+          <div className="kv" style={{color:totalOutstanding>0?"var(--danger)":"var(--success)"}}>£{totalOutstanding.toLocaleString()}</div>
+          <div className="ks">{unpaid.length} tenant{unpaid.length!==1?"s":""} remaining</div>
+        </div>
+        <div className="kc">
+          <div className="kl">Monthly Total</div>
+          <div className="kv">£{totalRent.toLocaleString()}</div>
+          <div className="ks">{active.length} active tenants</div>
         </div>
       </div>
 
       {/* Progress bar */}
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--sub)", marginBottom: 6 }}>
-          <span>{pct}% collected</span>
+      <div style={{marginBottom:24}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--sub)",marginBottom:6}}>
+          <span>{totalRent>0?Math.round(totalCollected/totalRent*100):0}% collected</span>
           <span>£{totalCollected.toLocaleString()} of £{totalRent.toLocaleString()}</span>
         </div>
-        <div style={{ height: 8, background: "var(--mist2)", borderRadius: 99, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: "var(--success)", borderRadius: 99, transition: "width .4s" }} />
+        <div className="pb" style={{height:10}}>
+          <div className="pbf" style={{width:`${totalRent>0?Math.round(totalCollected/totalRent*100):0}%`,background:"var(--success)"}}/>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Payment Reconciliation</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {loadingRec && <span style={{ fontSize: 12, color: "var(--sub)" }}>Loading…</span>}
-            <button className="sp-btn" onClick={exportReconciliation}>⬇️ Export Excel</button>
+      {/* Tenant list */}
+      <div className="card">
+        <div className="ch" style={{paddingBottom:14}}>
+          <div className="ct">Payment Reconciliation</div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {loadingRec && <span style={{fontSize:12,color:"var(--sub)"}}>Loading…</span>}
+            <button className="btn btn-outline btn-sm" onClick={exportReconciliation}>⬇️ Export to Excel</button>
           </div>
         </div>
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
+        <div className="tw">
+          <table>
             <thead>
               <tr>
                 <th>Unit</th>
                 <th>Tenant</th>
                 <th>Method</th>
-                <th style={{ textAlign: "right" }}>Rent/mo</th>
+                <th style={{textAlign:"right"}}>Rent/mo</th>
                 <th>Status</th>
-                <th style={{ textAlign: "right" }}>Paid</th>
+                <th style={{textAlign:"right"}}>Paid</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {sortedActive.length === 0 && (
-                <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--sub)", padding: "32px 0" }}>No active tenants with rent set</td></tr>
-              )}
               {sortedActive.map(u => {
                 const rec = getRecord(u.id);
                 const isPaid = !!rec;
-                const paidDate = rec?.paid_at ? new Date(rec.paid_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : null;
+                const paidDate = rec?.paid_at ? new Date(rec.paid_at).toLocaleDateString("en-GB",{day:"numeric",month:"short"}) : null;
                 return (
-                  <tr key={u.id} style={{ background: isPaid ? "#F7FDF9" : u.status === "arrears" ? "#FFFAF5" : "" }}>
-                    <td style={{ fontWeight: 700, color: "var(--navy)" }}>{u.label || u.id}</td>
-                    <td style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      <button onClick={() => openHistory(u)} style={{ background: "none", border: "none", color: "var(--navy)", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: 0, textAlign: "left" }}>
-                        {u.tenant || "—"}
+                  <tr key={u.id} style={{background:isPaid?"#F7FDF9":u.status==="arrears"?"#FFFAF5":""}}>
+                    <td style={{fontWeight:700,color:"var(--navy)"}}>{u.id}</td>
+                    <td style={{maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      <button onClick={()=>openHistory(u)} style={{background:"none",border:"none",color:"var(--navy)",fontWeight:600,fontSize:13,cursor:"pointer",padding:0,textAlign:"left",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {u.tenant||"—"}
                       </button>
                     </td>
-                    <td style={{ fontSize: 12, color: "var(--sub)" }}>{u.payment || "—"}</td>
-                    <td style={{ textAlign: "right", fontWeight: 600 }}>£{(Number(u.rent) || 0).toLocaleString()}</td>
-                    <td><Pill s={u.status} /></td>
-                    <td style={{ textAlign: "right", fontSize: 12 }}>
+                    <td style={{fontSize:12,color:"var(--sub)"}}>{u.payment||"—"}</td>
+                    <td style={{textAlign:"right",fontWeight:600}}>£{(Number(u.rent)||0).toLocaleString()}</td>
+                    <td><span className={`pill ${PC[u.status]||"p-occ"}`}>{SL[u.status]||u.status}</span></td>
+                    <td style={{textAlign:"right",fontSize:12}}>
                       {isPaid
-                        ? <span style={{ color: "var(--success)", fontWeight: 600 }}>
-                            ✓ {paidDate}
-                            {rec?.notes && <span style={{ fontSize: 10, color: "var(--sub)", fontWeight: 400, marginLeft: 4 }}>· {rec.notes}</span>}
-                          </span>
-                        : <span style={{ color: isOverdueMonth ? "var(--danger)" : "var(--sub)" }}>—</span>
+                        ? <span style={{color:"var(--success)",fontWeight:600}} title={rec?.notes||""}>✓ {paidDate}{rec?.notes&&<span style={{fontSize:10,color:"var(--sub)",fontWeight:400,marginLeft:4}}>· {rec.notes}</span>}</span>
+                        : <span style={{color:isOverdueMonth&&isCurrentMonth?"var(--danger)":"var(--sub)"}}>—</span>
                       }
                     </td>
-                    <td style={{ textAlign: "right" }}>
+                    <td style={{textAlign:"right"}}>
                       {isPaid
-                        ? <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleUnmark(u)}>↩ Undo</button>
-                        : <button
-                            className="sp-btn"
-                            style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }}
-                            onClick={() => { setNotesModal({ unit: u }); setNotesVal(""); setClearArrears(true); }}
-                            disabled={markingId === u.id}
-                          >
-                            {markingId === u.id ? "…" : "✓ Mark paid"}
+                        ? <button className="btn btn-outline btn-sm" style={{fontSize:11}} onClick={()=>handleUnmark(u)}>↩ Undo</button>
+                        : <button className="btn btn-success btn-sm" onClick={()=>setNotesModal({unit:u})} disabled={markingId===u.id}>
+                            {markingId===u.id?"…":"✓ Mark paid"}
                           </button>
                       }
                     </td>
                   </tr>
                 );
               })}
+              {active.length===0&&(
+                <tr><td colSpan={7} style={{textAlign:"center",color:"var(--sub)",padding:"28px 0"}}>No active tenants found</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Mark paid modal */}
-      {notesModal && (
-        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setNotesModal(null)}>
-          <div className="modal" style={{ maxWidth: 420 }}>
-            <div className="modal-header">
-              <div className="modal-title">Mark as Paid — {notesModal.unit.tenant || notesModal.unit.id}</div>
-              <button className="modal-close" onClick={() => setNotesModal(null)}>✕</button>
+      {/* Notes modal — shown before marking paid */}
+      {notesModal&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setNotesModal(null)}>
+          <div className="modal" style={{maxWidth:420}}>
+            <div className="mh">
+              <div className="mt">Mark as Paid — {notesModal.unit.tenant||notesModal.unit.id}</div>
+              <button className="mc" onClick={()=>setNotesModal(null)}>✕</button>
             </div>
-            <div className="modal-body">
-              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>
+            <div style={{padding:"20px 22px"}}>
+              <div style={{fontSize:13,color:"var(--sub)",marginBottom:16}}>
                 £{notesModal.unit.rent}/mo · {monthLabel(viewMonth)}
               </div>
-              <div className="form-grid-item full" style={{ marginBottom: 12 }}>
-                <label>Reference / Notes (optional)</label>
+              <div style={{marginBottom:12}}>
+                <label style={{fontSize:12,fontWeight:600,color:"var(--navy)",display:"block",marginBottom:6}}>Reference / Notes (optional)</label>
                 <input
+                  id="pay-notes-input"
                   autoFocus
-                  value={notesVal}
-                  onChange={e => setNotesVal(e.target.value)}
                   placeholder="e.g. BACS ref 12345, cheque no. 001…"
-                  onKeyDown={e => {
-                    if (e.key === "Enter") {
-                      handleMarkPaid(notesModal.unit, notesVal, clearArrears);
-                      setNotesModal(null);
-                    }
-                  }}
+                  style={{width:"100%",fontFamily:"var(--fb)",fontSize:13,padding:"8px 11px",border:"1.5px solid #D0DAE8",borderRadius:7,outline:"none",boxSizing:"border-box"}}
+                  onKeyDown={e=>{if(e.key==="Enter"){const v=document.getElementById("pay-notes-input").value;const ca=notesModal.unit.status==="arrears"&&document.getElementById("clear-arrears-cb")?.checked;handleMarkPaid(notesModal.unit,{notes:v,clearArrears:ca});setNotesModal(null);}}}
                 />
               </div>
-              {notesModal.unit.status === "arrears" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, padding: "10px 12px", background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 7 }}>
-                  <input type="checkbox" id="clear-arr" checked={clearArrears} onChange={e => setClearArrears(e.target.checked)} style={{ width: 15, height: 15, cursor: "pointer" }} />
-                  <label htmlFor="clear-arr" style={{ fontSize: 13, color: "#7A5C00", cursor: "pointer", fontWeight: 500 }}>
+              {notesModal.unit.status==="arrears"&&(
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,padding:"10px 12px",background:"#FFF8E1",border:"1.5px solid #FFD54F",borderRadius:7}}>
+                  <input type="checkbox" id="clear-arrears-cb" defaultChecked={true} style={{width:15,height:15,cursor:"pointer"}}/>
+                  <label htmlFor="clear-arrears-cb" style={{fontSize:13,color:"#7A5C00",cursor:"pointer",fontWeight:500}}>
                     Also clear arrears status (set back to Occupied)
                   </label>
                 </div>
               )}
-            </div>
-            <div className="modal-footer">
-              <button className="modal-btn modal-btn-outline" onClick={() => setNotesModal(null)}>Cancel</button>
-              <button className="modal-btn" style={{ background: "var(--success)", color: "#fff" }} onClick={() => {
-                handleMarkPaid(notesModal.unit, notesVal, clearArrears);
-                setNotesModal(null);
-              }}>✓ Confirm paid</button>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button className="btn btn-outline" onClick={()=>setNotesModal(null)}>Cancel</button>
+                <button className="btn btn-success" onClick={()=>{
+                  const v=document.getElementById("pay-notes-input")?.value||"";
+                  const clearArrears=notesModal.unit.status==="arrears"&&document.getElementById("clear-arrears-cb")?.checked;
+                  handleMarkPaid(notesModal.unit, {notes:v, clearArrears});
+                  setNotesModal(null);
+                }}>✓ Confirm paid</button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* History modal */}
-      {historyTenant && (
-        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setHistoryTenant(null)}>
-          <div className="modal" style={{ maxWidth: 480 }}>
-            <div className="modal-header">
-              <div className="modal-title">Payment History — {historyTenant.tenant || historyTenant.id}</div>
-              <button className="modal-close" onClick={() => setHistoryTenant(null)}>✕</button>
+      {historyTenant&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setHistoryTenant(null)}>
+          <div className="modal" style={{maxWidth:460}}>
+            <div className="mh">
+              <div className="mt">Payment History — {historyTenant.tenant||historyTenant.id}</div>
+              <button className="mc" onClick={()=>setHistoryTenant(null)}>✕</button>
             </div>
-            <div className="modal-body">
-              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 14 }}>
-                £{historyTenant.rent}/mo · {historyTenant.payment || "—"}
+            <div style={{padding:"16px 22px"}}>
+              <div style={{fontSize:13,color:"var(--sub)",marginBottom:14}}>
+                £{historyTenant.rent}/mo · {historyTenant.payment||"—"}
               </div>
               {historyLoading
-                ? <div style={{ textAlign: "center", padding: "24px 0", color: "var(--sub)" }}>Loading…</div>
-                : history.length === 0
-                  ? <div style={{ textAlign: "center", padding: "24px 0", color: "var(--sub)" }}>No payment records found</div>
-                  : <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Month</th>
-                          <th style={{ textAlign: "right" }}>Amount</th>
-                          <th>Date Paid</th>
-                          <th>Reference</th>
-                        </tr>
-                      </thead>
+                ? <div style={{textAlign:"center",padding:"24px 0",color:"var(--sub)"}}>Loading…</div>
+                : history.length===0
+                  ? <div style={{textAlign:"center",padding:"24px 0",color:"var(--sub)"}}>No payment records found</div>
+                  : <table style={{width:"100%"}}>
+                      <thead><tr><th>Month</th><th style={{textAlign:"right"}}>Amount</th><th>Date Paid</th><th>Reference</th></tr></thead>
                       <tbody>
-                        {history.map(h => (
+                        {history.map(h=>(
                           <tr key={h.id}>
-                            <td style={{ fontWeight: 600 }}>{monthLabel(h.period_month)}</td>
-                            <td style={{ textAlign: "right" }}>£{(Number(h.amount) || 0).toLocaleString()}</td>
-                            <td style={{ fontSize: 12, color: "var(--sub)" }}>
-                              {h.paid_at ? new Date(h.paid_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                            <td style={{fontWeight:600}}>{monthLabel(h.period_month)}</td>
+                            <td style={{textAlign:"right"}}>£{(Number(h.amount)||0).toLocaleString()}</td>
+                            <td style={{fontSize:12,color:"var(--sub)"}}>
+                              {h.paid_at ? new Date(h.paid_at).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}) : "—"}
                             </td>
-                            <td style={{ fontSize: 12, color: "var(--sub)" }}>{h.notes || "—"}</td>
+                            <td style={{fontSize:12,color:"var(--sub)"}}>{h.notes||"—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2797,1970 +2156,730 @@ function PaymentsPage({ data, orgId, token, toast, onStatusUpdate }) {
   );
 }
 
-// ─── Enquiry helpers ──────────────────────────────────────────────────────────
-const ENQUIRY_STATUSES = {
-  reserved:  "🔒 Reserved",
-  waiting:   "⏳ Waiting",
-  contacted: "📞 Contacted",
-  converted: "✅ Converted",
-  lost:      "❌ Found elsewhere",
-  withdrawn: "🚫 No longer interested",
-  archived:  "📦 Archived",
-};
 
-async function enquiryList(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/enquiries?org_id=eq.${orgId}&order=enquiry_date.desc`,
-    { headers: authH(token) }
-  );
-  return r.ok ? r.json() : [];
-}
 
-async function enquirySave(data, orgId, token) {
-  const clean = { ...data, org_id: orgId, updated_at: new Date().toISOString() };
-  if (!clean.follow_up_date) clean.follow_up_date = null;
-  if (!clean.enquiry_date) clean.enquiry_date = null;
-  if (!clean.email) clean.email = null;
-  if (!clean.phone) clean.phone = null;
-  if (!clean.size_needed) clean.size_needed = null;
-  if (!clean.notes) clean.notes = null;
-  if (!clean.earmarked_unit) clean.earmarked_unit = null;
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/enquiries`, {
-    method: "POST",
-    headers: { ...authH(token), Prefer: "return=representation" },
-    body: JSON.stringify(clean),
-  });
-  return r.ok ? r.json() : null;
-}
+// ─── Tasks / Jobs ─────────────────────────────────────────────────────────────
+const TASK_CATEGORIES = ["Storage","Residential","Commercial","General"];
+const TASK_PRIORITIES = ["Low","Medium","High","Urgent"];
+const TASK_STATUSES = ["Open","In Progress","Done"];
+const TASK_RECURRENCE = ["None","Weekly","Fortnightly","Monthly","Quarterly","Annually"];
+const PRIORITY_COLOR = {Low:"#5A6E8A",Medium:"#C9A84C",High:"#E67E22",Urgent:"#C0392B"};
+const PRIORITY_BG = {Low:"#F0F4FA",Medium:"#FFFBEA",High:"#FFF3E0",Urgent:"#FFF0EE"};
 
-async function enquiryUpdate(id, data, token) {
-  const clean = { ...data, updated_at: new Date().toISOString() };
-  if (clean.follow_up_date === "") clean.follow_up_date = null;
-  if (clean.enquiry_date === "") clean.enquiry_date = null;
-  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
-    method: "PATCH",
-    headers: { ...authH(token), Prefer: "return=minimal" },
-    body: JSON.stringify(clean),
-  });
-}
-
-async function enquiryDelete(id, token) {
-  await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
-    method: "DELETE",
-    headers: authH(token),
-  });
-}
-
-// ─── Enquiries Page ───────────────────────────────────────────────────────────
-function EnquiriesPage({ orgId, token, data, toast }) {
-  const [enquiries, setEnquiries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [catFilter, setCatFilter] = useState("all");
-  const [showForm, setShowForm] = useState(false);
-  const [editItem, setEditItem] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [convertEnquiry, setConvertEnquiry] = useState(null);
-  const [convertUnit, setConvertUnit] = useState("");
-  const [form, setForm] = useState({
-    name: "", email: "", phone: "", category: "Storage",
-    size_needed: "", notes: "", status: "waiting",
-    enquiry_date: new Date().toISOString().slice(0, 10),
-    follow_up_date: "", earmarked_unit: "",
-  });
-
-  const uf = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
-
-  useEffect(() => {
-    if (!orgId || !token) return;
-    enquiryList(orgId, token).then(d => {
-      setEnquiries(Array.isArray(d) ? d : []);
-      setLoading(false);
+// ─── Login Log ───────────────────────────────────────────────────────────────
+async function loginLogRecord(email, token){
+  try{
+    await fetch(`${SUPABASE_URL}/rest/v1/login_log`,{
+      method:"POST",
+      headers:{...authH(token),Prefer:"return=minimal"},
+      body:JSON.stringify({email, logged_in_at: new Date().toISOString()})
     });
-  }, [orgId, token]);
-
-  async function reload() {
-    const d = await enquiryList(orgId, token);
-    setEnquiries(Array.isArray(d) ? d : []);
-  }
-
-  function openAdd() {
-    setForm({ name: "", email: "", phone: "", category: "Storage", size_needed: "", notes: "", status: "waiting", enquiry_date: new Date().toISOString().slice(0, 10), follow_up_date: "", earmarked_unit: "" });
-    setEditItem(null);
-    setShowForm(true);
-  }
-
-  function openEdit(e) {
-    setForm({ ...e, enquiry_date: e.enquiry_date || "", follow_up_date: e.follow_up_date || "", earmarked_unit: e.earmarked_unit || "" });
-    setEditItem(e);
-    setShowForm(true);
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    if (editItem) {
-      await enquiryUpdate(editItem.id, form, token);
-      await reload();
-      setShowForm(false);
-    } else {
-      const saved = await enquirySave(form, orgId, token);
-      const newRecord = Array.isArray(saved) ? saved[0] : saved;
-      await reload();
-      if (newRecord?.id) {
-        setEditItem({ ...form, id: newRecord.id });
-        setForm(f => ({ ...f, id: newRecord.id }));
-      } else {
-        setShowForm(false);
-      }
-    }
-    setSaving(false);
-    toast(editItem ? "Enquiry saved" : "Enquiry added", "success");
-  }
-
-  async function handleDelete(id) {
-    if (!window.confirm("Remove this enquiry? This cannot be undone.")) return;
-    await enquiryDelete(id, token);
-    await reload();
-    setShowForm(false);
-    toast("Enquiry deleted", "success");
-  }
-
-  async function quickStatus(id, status) {
-    await enquiryUpdate(id, { status }, token);
-    setEnquiries(e => e.map(x => x.id === id ? { ...x, status } : x));
-  }
-
-  async function handleConvert() {
-    if (!convertUnit) { alert("Please select a unit first."); return; }
-    if (!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
-    const unit = data.find(u => u.id === convertUnit);
-    if (!unit) { alert("Unit not found."); return; }
-    try {
-      await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}&org_id=eq.${orgId}`, {
-        method: "PATCH",
-        headers: { ...authH(token), Prefer: "return=minimal" },
-        body: JSON.stringify({
-          tenant: convertEnquiry.name,
-          email: convertEnquiry.email || "",
-          phone: convertEnquiry.phone || "",
-          status: "new",
-          move_in_date: new Date().toISOString().slice(0, 10),
-          notes: convertEnquiry.notes || "",
-        }),
-      });
-      await enquiryUpdate(convertEnquiry.id, { status: "converted" }, token);
-      setEnquiries(enq => enq.map(e => e.id === convertEnquiry.id ? { ...e, status: "converted" } : e));
-      setConvertEnquiry(null);
-      setConvertUnit("");
-      toast(`${convertEnquiry.name} converted to tenant in unit ${convertUnit}`, "success");
-    } catch (e) {
-      toast("Conversion failed: " + e.message, "error");
-    }
-  }
-
-  function matchingVacantUnits(enq) {
-    return (data || []).filter(u =>
-      (u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant)) &&
-      (!enq.category || u.category === enq.category)
-    ).sort((a, b) => (a.id || "").localeCompare(b.id || ""));
-  }
-
-  function daysSince(dateStr) {
-    if (!dateStr) return null;
-    return Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
-  }
-
-  function urgencyColor(e) {
-    const days = daysSince(e.enquiry_date);
-    if (days > 60) return "var(--danger)";
-    if (days > 30) return "var(--warning)";
-    return "var(--sub)";
-  }
-
-  const filtered = enquiries.filter(e => {
-    const ms = statusFilter === "all" ? e.status !== "archived" : e.status === statusFilter;
-    const mc = catFilter === "all" || e.category === catFilter;
-    return ms && mc;
-  });
-
-  const waiting = enquiries.filter(e => e.status === "waiting");
-  const contacted = enquiries.filter(e => e.status === "contacted");
-  const reserved = enquiries.filter(e => e.status === "reserved");
-
-  return (
-    <div className="page">
-      {/* KPI cards */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
-        <div className="kpi-card">
-          <div className="kpi-label">Waiting</div>
-          <div className="kpi-value">{waiting.length}</div>
-          <div className="kpi-meta">Active enquiries</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">Contacted</div>
-          <div className="kpi-value">{contacted.length}</div>
-          <div className="kpi-meta">Awaiting response</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">Reserved</div>
-          <div className="kpi-value">{reserved.length}</div>
-          <div className="kpi-meta">Earmarked for a unit</div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          <button className={`sp-btn ${statusFilter === "all" ? "active" : ""}`} onClick={() => setStatusFilter("all")}>All</button>
-          {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => (
-            <button key={k} className={`sp-btn ${statusFilter === k ? "active" : ""}`} onClick={() => setStatusFilter(k)}>{v}</button>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {["all", "Storage", "Residential", "Commercial"].map(c => (
-            <button key={c} className={`sp-btn ${catFilter === c ? "active" : ""}`} onClick={() => setCatFilter(c)}>{c === "all" ? "All" : c}</button>
-          ))}
-          <button className="sp-btn sp-btn-primary" onClick={openAdd}>+ Add Enquiry</button>
-        </div>
-      </div>
-
-      {/* Table */}
-      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
-
-      {!loading && filtered.length === 0 && (
-        <div className="card" style={{ textAlign: "center", padding: 48 }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
-          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No enquiries found</div>
-          <div style={{ fontSize: 13, color: "var(--sub)" }}>Click + Add Enquiry to record your first CRM entry.</div>
-        </div>
-      )}
-
-      {!loading && filtered.length > 0 && (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Contact</th>
-                  <th>Category</th>
-                  <th>Size Needed</th>
-                  <th>Date</th>
-                  <th>Days Waiting</th>
-                  <th>Status</th>
-                  <th>Notes</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(e => (
-                  <tr key={e.id}>
-                    <td style={{ fontWeight: 600, color: "var(--navy)", whiteSpace: "nowrap" }}>{e.name}</td>
-                    <td style={{ fontSize: 12 }}>
-                      {e.email && <div>{e.email}</div>}
-                      {e.phone && <div style={{ color: "var(--sub)" }}>{e.phone}</div>}
-                    </td>
-                    <td>
-                      <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 5, fontWeight: 500, color: "var(--sub)" }}>
-                        {e.category}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 12 }}>{e.size_needed || "—"}</td>
-                    <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                      {e.enquiry_date ? new Date(e.enquiry_date).toLocaleDateString("en-GB") : "—"}
-                    </td>
-                    <td style={{ fontWeight: 600, color: urgencyColor(e) }}>
-                      {daysSince(e.enquiry_date) != null ? daysSince(e.enquiry_date) + " days" : "—"}
-                      {e.status === "reserved" && e.earmarked_unit && (
-                        <div style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600, marginTop: 2 }}>🔒 {e.earmarked_unit}</div>
-                      )}
-                    </td>
-                    <td>
-                      <select
-                        value={e.status}
-                        onChange={ev => quickStatus(e.id, ev.target.value)}
-                        style={{ fontSize: 11, padding: "4px 6px", borderRadius: 5, border: "1px solid var(--mist2)", color: "var(--navy)", fontFamily: "var(--fb)" }}
-                      >
-                        {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
-                    </td>
-                    <td style={{ fontSize: 11, color: "var(--sub)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {e.notes || "—"}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => openEdit(e)}>Edit</button>
-                        {(e.status === "waiting" || e.status === "contacted" || e.status === "reserved") && (
-                          <button className="sp-btn" style={{ fontSize: 11, padding: "4px 10px", background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }}
-                            onClick={() => { setConvertEnquiry(e); setConvertUnit(e.earmarked_unit || ""); }}>
-                            🏠 Convert
-                          </button>
-                        )}
-                        <button className="sp-btn sp-btn-danger" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => handleDelete(e.id)}>🗑️</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ padding: "9px 16px", fontSize: 12, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>
-            {filtered.length} enquiries shown
-          </div>
-        </div>
-      )}
-
-      {/* Convert to Tenant Modal */}
-      {convertEnquiry && (
-        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setConvertEnquiry(null)}>
-          <div className="modal" style={{ maxWidth: 480 }}>
-            <div className="modal-header">
-              <div className="modal-title">Convert to Tenant — {convertEnquiry.name}</div>
-              <button className="modal-close" onClick={() => setConvertEnquiry(null)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>
-                {convertEnquiry.category} · {convertEnquiry.size_needed || "No size specified"}
-                {convertEnquiry.email ? ` · ${convertEnquiry.email}` : ""}
-              </div>
-              {(() => {
-                const vacant = matchingVacantUnits(convertEnquiry);
-                if (vacant.length === 0) return (
-                  <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: 14, fontSize: 13, color: "#7A5C00", marginBottom: 16 }}>
-                    ⚠️ No vacant {convertEnquiry.category} units available. Change a unit status to Available on the Site Plan first.
-                  </div>
-                );
-                return (
-                  <>
-                    <div className="form-grid-item full" style={{ marginBottom: 16 }}>
-                      <label>Select unit to assign</label>
-                      <select value={convertUnit} onChange={e => setConvertUnit(e.target.value)}>
-                        <option value="">— Choose a vacant unit —</option>
-                        {vacant.map(u => (
-                          <option key={u.id} value={u.id}>
-                            {u.label || u.id}{u.size ? ` · ${u.size}` : ""}{u.row_name ? ` · ${u.row_name}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div style={{ background: "#EAF3DE", border: "1px solid #B5D98A", borderRadius: 7, padding: "10px 14px", fontSize: 12, color: "#3B6D11", marginBottom: 16 }}>
-                      ℹ️ This will set the tenant name, email, phone and status to New in the selected unit.
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-            <div className="modal-footer">
-              <button className="modal-btn modal-btn-outline" onClick={() => setConvertEnquiry(null)}>Cancel</button>
-              <button className="modal-btn" style={{ background: "var(--success)", color: "#fff" }} onClick={handleConvert} disabled={!convertUnit}>
-                ✅ Convert to Tenant
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add / Edit Modal */}
-      {showForm && (
-        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
-          <div className="modal">
-            <div className="modal-header">
-              <div className="modal-title">{editItem ? "Edit Enquiry" : "New Enquiry"}</div>
-              <button className="modal-close" onClick={() => setShowForm(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div className="form-grid">
-                <div className="form-grid-item full">
-                  <label>Name *</label>
-                  <input value={form.name} onChange={uf("name")} placeholder="Full name" autoFocus />
-                </div>
-                <div className="form-grid-item">
-                  <label>Email</label>
-                  <input type="email" value={form.email} onChange={uf("email")} placeholder="email@example.com" />
-                </div>
-                <div className="form-grid-item">
-                  <label>Phone</label>
-                  <input value={form.phone} onChange={uf("phone")} placeholder="07700 000000" />
-                </div>
-                <div className="form-grid-item">
-                  <label>Category</label>
-                  <select value={form.category} onChange={uf("category")}>
-                    {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
-                  </select>
-                </div>
-                <div className="form-grid-item">
-                  <label>Size Needed</label>
-                  <input value={form.size_needed} onChange={uf("size_needed")} placeholder="e.g. Small, XL, 2-bed" />
-                </div>
-                <div className="form-grid-item">
-                  <label>Enquiry Date</label>
-                  <input type="date" value={form.enquiry_date} onChange={uf("enquiry_date")} />
-                </div>
-                <div className="form-grid-item">
-                  <label>Follow-up Date</label>
-                  <input type="date" value={form.follow_up_date} onChange={uf("follow_up_date")} />
-                </div>
-                <div className="form-grid-item">
-                  <label>Status</label>
-                  <select value={form.status} onChange={uf("status")}>
-                    {Object.entries(ENQUIRY_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </div>
-                {form.status === "reserved" && (
-                  <div className="form-grid-item full">
-                    <label>Earmarked Unit (optional)</label>
-                    <select value={form.earmarked_unit || ""} onChange={uf("earmarked_unit")}>
-                      <option value="">— Select a unit —</option>
-                      {(data || [])
-                        .filter(d => d.status === "leaving" || d.status === "available" || d.status === "vacant" || !d.tenant)
-                        .sort((a, b) => (a.id || "").localeCompare(b.id || ""))
-                        .map(d => <option key={d.id} value={d.id}>{d.label || d.id}{d.tenant ? ` (${d.tenant})` : ""} · {d.status || "vacant"}</option>)
-                      }
-                    </select>
-                  </div>
-                )}
-                <div className="form-grid-item full">
-                  <label>Notes</label>
-                  <textarea value={form.notes} onChange={uf("notes")} placeholder="Notes from conversations, preferences, special requirements…" style={{ minHeight: 80 }} />
-                </div>
-              </div>
-            </div>
-            <div className="modal-footer">
-              {editItem && <button className="modal-btn modal-btn-danger" onClick={() => handleDelete(editItem.id)}>Delete</button>}
-              <button className="modal-btn modal-btn-outline" onClick={() => setShowForm(false)}>{editItem ? "Close" : "Cancel"}</button>
-              <button className="modal-btn modal-btn-primary" onClick={handleSave} disabled={saving || !form.name}>
-                {saving ? "Saving…" : editItem ? "Save" : "Save & Continue"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  }catch{}
+}
+async function loginLogList(token){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/login_log?order=logged_in_at.desc&limit=100`,{headers:authH(token)});
+  return r.ok?r.json():[];
 }
 
-// ─── Archive helpers ──────────────────────────────────────────────────────────
-async function archiveList(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/archived_tenants?org_id=eq.${orgId}&order=archived_at.desc`,
-    { headers: authH(token) }
-  );
-  return r.ok ? r.json() : [];
-}
-
-async function archiveDelete(id, token) {
-  await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${id}`, {
-    method: "DELETE", headers: authH(token),
-  });
-}
-
-async function dbGetDeleted(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/tenants?org_id=eq.${orgId}&deleted_at=not.is.null&archived=eq.false&order=deleted_at.desc`,
-    { headers: authH(token) }
-  );
-  return r.ok ? r.json() : [];
-}
-
-// ─── Archive Page ─────────────────────────────────────────────────────────────
-function ArchivePage({ orgId, token, data, toast, onDataRefresh }) {
-  const [archived, setArchived] = useState([]);
-  const [deleted, setDeleted] = useState([]);
-  const [tab, setTab] = useState("archived");
-  const [loading, setLoading] = useState(true);
-
-  async function reload() {
-    const [a, d] = await Promise.all([archiveList(orgId, token), dbGetDeleted(orgId, token)]);
-    setArchived(Array.isArray(a) ? a : []);
-    setDeleted(Array.isArray(d) ? d : []);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    if (!orgId || !token) return;
-    reload();
-  }, [orgId, token]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function daysLeft(ts) {
-    if (!ts) return "";
-    const days = 30 - Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
-    return days <= 0 ? "Expires today" : `${days} days left`;
-  }
-
-  async function handleRestore(archiveId) {
-    try {
-      const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${archiveId}&org_id=eq.${orgId}`,
-        { headers: authH(token) }
-      );
-      const rows = await r.json();
-      if (!rows?.[0]) { toast("Archive record not found", "error"); return; }
-      const record = rows[0];
-      const tenantData = record.tenant_data;
-      const unitId = record.original_unit_id;
-
-      // Hard block — never allow restore if unit is currently occupied
-      const unit = data.find(u => u.id === unitId);
-      const unitOccupied = unit && (unit.tenant || ["occupied", "new", "arrears", "leaving"].includes(unit.status));
-      if (unitOccupied) {
-        alert(
-          `⛔ Cannot Restore\n\nUnit ${unitId} is currently occupied by "${unit.tenant || "a tenant"}".\n\n` +
-          `To restore ${tenantData?.tenant || "this tenant"}, first archive the current occupant, or add them to a different vacant unit.`
-        );
-        return;
-      }
-
-      if (!window.confirm(`Restore ${tenantData?.tenant || unitId} to unit ${unitId}?\n\nThe unit is currently vacant. Their details and documents will be restored.`)) return;
-
-      // Restore tenant record
-      const restored = { ...tenantData, id: unitId, org_id: orgId, archived: false, deleted_at: null, deleted_data: null };
-      await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
-        method: "POST",
-        headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify(restored),
-      });
-
-      // Move documents back from archive folder to unit folder
-      const safeUnitId = String(unitId).replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-      let docsRestored = 0;
-      try {
-        const docsR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-          method: "POST",
-          headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ prefix: `archive/${archiveId}/`, limit: 200 }),
-        });
-        const docs = await docsR.json();
-        for (const doc of (Array.isArray(docs) ? docs : []).filter(d => d.id)) {
-          const srcPath = `archive/${archiveId}/${doc.name}`;
-          const dstPath = `${safeUnitId}/${doc.name}`;
-          const copyR = await fetch(`${SUPABASE_URL}/storage/v1/object/copy`, {
-            method: "POST",
-            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ bucketId: "documents", sourceKey: srcPath, destinationKey: dstPath, destinationBucket: "documents" }),
-          });
-          if (copyR.ok) {
-            await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(srcPath)}&org_id=eq.${orgId}`, {
-              method: "PATCH",
-              headers: { ...authH(token), Prefer: "return=minimal" },
-              body: JSON.stringify({ file_path: dstPath, tenant_id: safeUnitId }),
-            });
-            await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${srcPath}`, {
-              method: "DELETE",
-              headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
-            });
-            docsRestored++;
-          }
-        }
-      } catch {}
-
-      await archiveDelete(archiveId, token);
-      await reload();
-      if (onDataRefresh) onDataRefresh();
-      toast(`Restored ${tenantData?.tenant || unitId} · ${docsRestored} document${docsRestored !== 1 ? "s" : ""} restored`, "success");
-    } catch { toast("Restore failed", "error"); }
-  }
-
-  async function handleRestoreDeleted(id) {
-    try {
-      const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
-        { headers: authH(token) }
-      );
-      const rows = await r.json();
-      if (!rows?.[0]) { toast("Record not found", "error"); return; }
-      const row = rows[0];
-      const orig = row.deleted_data ? JSON.parse(row.deleted_data) : row;
-      if (!window.confirm(`Restore ${orig.tenant || orig.label || id}?`)) return;
-      await fetch(`${SUPABASE_URL}/rest/v1/tenants`, {
-        method: "POST",
-        headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify({ ...orig, deleted_at: null, deleted_data: null, archived: false, org_id: orgId }),
-      });
-      toast(`Restored — ${orig.tenant || orig.label || id}`, "success");
-      await reload();
-      if (onDataRefresh) onDataRefresh();
-    } catch { toast("Restore failed", "error"); }
-  }
-
-  async function handlePermDelete(id, isDeleted = false) {
-    if (!window.confirm("Permanently delete this record? This cannot be undone.")) return;
-    try {
-      if (isDeleted) {
-        await fetch(
-          `${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(id)}&org_id=eq.${orgId}`,
-          { method: "DELETE", headers: authH(token) }
-        );
-      } else {
-        await archiveDelete(id, token);
-      }
-      toast("Permanently deleted", "success");
-      await reload();
-    } catch { toast("Delete failed", "error"); }
-  }
-
-  function RecordRow({ icon, name, meta, onRestore, onDelete }) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ fontSize: 24, flexShrink: 0 }}>{icon}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{name}</div>
-          <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 2 }}>{meta}</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <button className="sp-btn" style={{ fontSize: 12, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={onRestore}>↩️ Restore</button>
-          <button className="sp-btn sp-btn-danger" style={{ fontSize: 12 }} onClick={onDelete}>🗑️ Delete</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="page">
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        <button className={`sp-btn ${tab === "archived" ? "active" : ""}`} onClick={() => setTab("archived")}>
-          📦 Archived Tenants {archived.length > 0 && `(${archived.length})`}
-        </button>
-        <button className={`sp-btn ${tab === "deleted" ? "active" : ""}`} onClick={() => setTab("deleted")}>
-          🗑️ Recently Deleted {deleted.length > 0 && `(${deleted.length})`}
-        </button>
-      </div>
-
-      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
-
-      {/* Archived tab */}
-      {!loading && tab === "archived" && (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Archived Tenants</div>
-            <span style={{ fontSize: 12, color: "var(--sub)" }}>{archived.length} records</span>
-          </div>
-          {archived.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>📦</div>
-              <div style={{ fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No archived tenants yet</div>
-              <div style={{ fontSize: 13 }}>Use the Archive button in a tenant's Edit screen to archive a departed tenant.</div>
-            </div>
-          ) : (
-            archived.map(record => {
-              const t = record.tenant_data || {};
-              const name = t.tenant || t.label || ("Unit " + record.original_unit_id);
-              const icon = t.category === "Residential" ? "🏠" : t.category === "Commercial" ? "🏢" : "📦";
-              const meta = [
-                `Unit ${record.original_unit_id}`,
-                t.row_name,
-                t.rent ? `£${t.rent}/mo` : null,
-                t.email,
-                `Archived ${new Date(record.archived_at).toLocaleDateString("en-GB")}`,
-              ].filter(Boolean).join(" · ");
-              return (
-                <RecordRow
-                  key={record.id}
-                  icon={icon}
-                  name={name}
-                  meta={meta}
-                  onRestore={() => handleRestore(record.id)}
-                  onDelete={() => handlePermDelete(record.id, false)}
-                />
-              );
-            })
-          )}
-        </div>
-      )}
-
-      {/* Deleted tab */}
-      {!loading && tab === "deleted" && (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Recently Deleted</div>
-            <span style={{ fontSize: 12, color: "var(--sub)" }}>Auto-purged after 30 days</span>
-          </div>
-          {deleted.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--sub)" }}>
-              No recently deleted records
-            </div>
-          ) : (
-            deleted.map(t => {
-              const orig = t.deleted_data ? JSON.parse(t.deleted_data) : t;
-              const name = orig.tenant || orig.label || ("Unit " + t.id);
-              const icon = t.category === "Residential" ? "🏠" : t.category === "Commercial" ? "🏢" : "📦";
-              const meta = [
-                `Unit ${t.id}`,
-                t.category,
-                orig.row_name,
-                orig.rent ? `£${orig.rent}/mo` : null,
-                t.deleted_at ? `⏱ ${daysLeft(t.deleted_at)}` : null,
-              ].filter(Boolean).join(" · ");
-              return (
-                <RecordRow
-                  key={t.id}
-                  icon={icon}
-                  name={name}
-                  meta={meta}
-                  onRestore={() => handleRestoreDeleted(t.id)}
-                  onDelete={() => handlePermDelete(t.id, true)}
-                />
-              );
-            })
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Users Page ───────────────────────────────────────────────────────────────
-async function changePassword(newPassword, token) {
-  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    method: "PUT",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ password: newPassword }),
-  });
-  return r.ok;
-}
-
-async function mfaUnenroll(factorId, token) {
-  await fetch(`${SUPABASE_URL}/auth/v1/factors/${factorId}`, {
-    method: "DELETE",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-  });
-}
-
-function UsersPage({ token, session, toast, orgId }) {
-  const currentUserEmail = session?.user?.email || "";
-  const [users, setUsers] = useState([]);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviting, setInviting] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newEmail, setNewEmail] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [myFactors, setMyFactors] = useState([]);
-  const [showChangePw, setShowChangePw] = useState(false);
-  const [newPw, setNewPw] = useState("");
-  const [confirmPw, setConfirmPw] = useState("");
-  const [changingPw, setChangingPw] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  useEffect(() => {
-    if (!token) return;
-    fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "listUsers" }),
-    })
-      .then(r => r.json())
-      .then(d => setUsers(Array.isArray(d.users) ? d.users : []))
-      .catch(() => setUsers([]));
-    mfaListFactors(token).then(f => setMyFactors(Array.isArray(f) ? f : [])).catch(() => {});
-  }, [token]);
-
-  async function reloadUsers() {
-    const r = await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "listUsers" }),
-    });
-    const d = await r.json();
-    setUsers(Array.isArray(d.users) ? d.users : []);
-  }
-
-  async function handleInvite() {
-    if (!inviteEmail) return;
-    setInviting(true); setMsg("");
-    const tempPass = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-4).toUpperCase() + "!1";
-    try {
-      const d = await fetch("/api/admin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "createUser", email: inviteEmail, password: tempPass }),
-      }).then(r => r.json());
-      if (d.error) throw new Error(d.error_description || d.msg || d.error);
-      const newUserId = d.id;
-      // Add to org_users so they skip onboarding and join this org
-      if (newUserId && orgId) {
-        await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
-          method: "POST",
-          headers: { ...authH(token), Prefer: "return=minimal" },
-          body: JSON.stringify({ org_id: orgId, user_id: newUserId, role: "staff", invited_at: new Date().toISOString() }),
-        });
-      }
-      await fetch("/api/send-invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: inviteEmail, tempPassword: tempPass }),
-      });
-      setMsg(`✅ Invitation sent to ${inviteEmail} — they will join your organisation on login`);
-      setInviteEmail("");
-      await reloadUsers();
-    } catch (e) {
-      setMsg(`❌ Could not invite — ${e.message}`);
-    }
-    setInviting(false);
-  }
-
-  async function handleAddUser() {
-    if (!newEmail || !newPassword) return;
-    setAdding(true); setMsg("");
-    try {
-      const d = await fetch("/api/admin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "createUser", email: newEmail, password: newPassword }),
-      }).then(r => r.json());
-      if (d.error) throw new Error(d.error_description || d.msg || d.error);
-      const newUserId = d.id;
-      if (newUserId && orgId) {
-        await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
-          method: "POST",
-          headers: { ...authH(token), Prefer: "return=minimal" },
-          body: JSON.stringify({ org_id: orgId, user_id: newUserId, role: "staff", invited_at: new Date().toISOString() }),
-        });
-      }
-      setMsg(`✅ User ${newEmail} created and added to your organisation`);
-      setNewEmail(""); setNewPassword(""); setShowAdd(false);
-      await reloadUsers();
-    } catch (e) {
-      setMsg(`❌ Could not create user — ${e.message}`);
-    }
-    setAdding(false);
-  }
-
-  async function handleRemoveUser(userId, email) {
-    if (!window.confirm(`Remove ${email} from Cerect? They will no longer be able to log in.`)) return;
-    try {
-      await fetch("/api/admin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "deleteUser", userId }),
-      });
-      setMsg(`✅ ${email} has been removed`);
-      await reloadUsers();
-    } catch { setMsg("❌ Could not remove user"); }
-  }
-
-  async function handleResetPassword(email) {
-    if (!window.confirm(`Reset password for ${email}? A temporary password will be emailed to them.`)) return;
-    try {
-      const d = await fetch("/api/admin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "resetPassword", email }),
-      }).then(r => r.json());
-      if (d.error) throw new Error(d.error);
-      await fetch("/api/send-reset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: email, tempPassword: d.tempPass }),
-      });
-      setMsg(`✅ Password reset email sent to ${email}`);
-    } catch (e) {
-      setMsg(`❌ Reset failed — ${e.message}`);
-    }
-  }
-
-  async function handleRemoveMFA(factorId) {
-    if (!window.confirm("Remove your MFA authenticator? You will no longer be asked for a code when logging in.")) return;
-    try {
-      await mfaUnenroll(factorId, token);
-      setMyFactors([]);
-      setMsg("✅ MFA removed from your account");
-    } catch { setMsg("❌ Could not remove MFA"); }
-  }
-
-  async function handleChangePassword() {
-    if (!newPw || !confirmPw) { setMsg("❌ Please fill in both password fields"); return; }
-    if (newPw !== confirmPw) { setMsg("❌ Passwords do not match"); return; }
-    if (newPw.length < 8) { setMsg("❌ Password must be at least 8 characters"); return; }
-    setChangingPw(true); setMsg("");
-    try {
-      const ok = await changePassword(newPw, token);
-      if (ok) {
-        setMsg("✅ Password changed successfully");
-        setNewPw(""); setConfirmPw(""); setShowChangePw(false);
-      } else {
-        setMsg("❌ Could not change password");
-      }
-    } catch (e) { setMsg("❌ Error: " + e.message); }
-    setChangingPw(false);
-  }
-
-  const verifiedFactors = myFactors.filter(f => f.status === "verified");
-
-  return (
-    <div className="page">
-      {msg && (
-        <div style={{
-          padding: "10px 14px",
-          background: msg.startsWith("✅") ? "#EBF5F0" : "#FFF0EE",
-          border: `1.5px solid ${msg.startsWith("✅") ? "#BDE5D3" : "#FFCDD2"}`,
-          borderRadius: 9, marginBottom: 16, fontSize: 13,
-          color: msg.startsWith("✅") ? "var(--success)" : "var(--danger)",
-        }}>{msg}</div>
-      )}
-
-      {/* Change password */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showChangePw ? 16 : 0 }}>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>🔑 Change My Password</div>
-          <button className="sp-btn" onClick={() => { setShowChangePw(s => !s); setMsg(""); }}>
-            {showChangePw ? "✕ Cancel" : "Change Password"}
-          </button>
-        </div>
-        {showChangePw && (
-          <div>
-            <div className="form-grid" style={{ marginBottom: 12 }}>
-              <div className="form-grid-item">
-                <label>New Password</label>
-                <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="At least 8 characters" />
-              </div>
-              <div className="form-grid-item">
-                <label>Confirm New Password</label>
-                <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} placeholder="Repeat new password" />
-              </div>
-            </div>
-            <button className="sp-btn sp-btn-navy" onClick={handleChangePassword} disabled={changingPw || !newPw || !confirmPw}>
-              {changingPw ? "Changing…" : "Update Password"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* MFA status */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)", marginBottom: 14 }}>🔐 Two-Factor Authentication</div>
-        {verifiedFactors.length > 0 ? (
-          <div>
-            <div style={{ background: "#EBF5F0", border: "1.5px solid #BDE5D3", borderRadius: 9, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div>
-                <strong style={{ color: "var(--success)" }}>✅ MFA is active on your account</strong>
-                <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>Each login requires a 6-digit code from your authenticator app.</div>
-              </div>
-            </div>
-            {verifiedFactors.map(f => (
-              <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{f.friendly_name || "Authenticator App"}</div>
-                  <div style={{ fontSize: 12, color: "var(--sub)" }}>Added: {f.created_at ? new Date(f.created_at).toLocaleDateString("en-GB") : "Unknown"}</div>
-                </div>
-                <button className="sp-btn sp-btn-danger" onClick={() => handleRemoveMFA(f.id)}>Remove MFA</button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ background: "#FFF8E6", border: "1.5px solid #F5E0A0", borderRadius: 9, padding: "12px 16px" }}>
-            ⚠️ <strong>MFA is not enabled on your account.</strong>
-            <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>Sign out and sign back in — you will be prompted to set up your authenticator app.</div>
-          </div>
-        )}
-      </div>
-
-      {/* User list */}
-      <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>Team Members</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <span style={{ fontSize: 12, color: "var(--sub)", padding: "4px 10px", background: "var(--mist)", borderRadius: 99 }}>{users.length} users</span>
-            <button className="sp-btn sp-btn-primary" onClick={() => setShowAdd(s => !s)}>{showAdd ? "✕ Cancel" : "+ Add User"}</button>
-          </div>
-        </div>
-
-        {showAdd && (
-          <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--border)", background: "var(--mist)" }}>
-            <div style={{ fontFamily: "var(--fh)", fontSize: 13, fontWeight: 700, marginBottom: 12, color: "var(--navy)" }}>Create New User</div>
-            <div className="form-grid" style={{ marginBottom: 12 }}>
-              <div className="form-grid-item">
-                <label>Email Address</label>
-                <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="colleague@example.com" />
-              </div>
-              <div className="form-grid-item">
-                <label>Temporary Password</label>
-                <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="They can change this after login" />
-              </div>
-            </div>
-            <button className="sp-btn sp-btn-navy" onClick={handleAddUser} disabled={adding || !newEmail || !newPassword}>
-              {adding ? "Creating…" : "Create User"}
-            </button>
-            <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 8 }}>The user can log in immediately and will be prompted to set up MFA on first login.</div>
-          </div>
-        )}
-
-        {users.length === 0 && (
-          <div style={{ padding: "24px 18px", color: "var(--sub)", fontSize: 13 }}>Loading users…</div>
-        )}
-
-        {users.map(u => (
-          <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)", display: "flex", alignItems: "center", gap: 8 }}>
-                {u.email}
-                {u.email === currentUserEmail && (
-                  <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 99, color: "var(--sub)", fontWeight: 500 }}>You</span>
-                )}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--sub)", marginTop: 3 }}>
-                Last sign in: {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString("en-GB") : "Never"} ·
-                Created: {new Date(u.created_at).toLocaleDateString("en-GB")}
-                {u.factors?.length > 0
-                  ? <span style={{ color: "var(--success)", fontWeight: 600 }}> · 🔐 MFA on</span>
-                  : <span style={{ color: "#E65100" }}> · No MFA</span>
-                }
-              </div>
-            </div>
-            {u.email !== currentUserEmail && (
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleResetPassword(u.email)}>Reset Password</button>
-                <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleRemoveUser(u.id, u.email)}>Remove</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Invite by email */}
-      <div style={{ background: "var(--mist)", border: "1.5px dashed var(--mist2)", borderRadius: "var(--r)", padding: "20px" }}>
-        <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 14, color: "var(--navy)", marginBottom: 8 }}>✉️ Invite User by Email</div>
-        <div style={{ fontSize: 13, color: "var(--sub)", marginBottom: 12 }}>
-          Creates the account and sends an email with their temporary password and login link.
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <input
-            style={{ flex: 1, fontFamily: "var(--fb)", fontSize: 14, padding: "9px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", background: "#fff" }}
-            type="email"
-            placeholder="colleague@example.com"
-            value={inviteEmail}
-            onChange={e => setInviteEmail(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleInvite()}
-          />
-          <button className="sp-btn sp-btn-primary" onClick={handleInvite} disabled={inviting || !inviteEmail}>
-            {inviting ? "Sending…" : "Send Invite"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Document helpers ─────────────────────────────────────────────────────────
-const DOC_TAGS = ["Contract", "ID / Passport", "Correspondence", "Payment Record", "Insurance", "Reference", "Photo", "Other"];
-
-function fileIcon(name) {
-  const ext = (name.split(".").pop() || "").toLowerCase();
-  if (["pdf"].includes(ext)) return "📄";
-  if (["doc", "docx"].includes(ext)) return "📝";
-  if (["xls", "xlsx", "csv"].includes(ext)) return "📊";
-  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "🖼️";
-  if (["zip", "rar", "7z"].includes(ext)) return "📦";
-  return "📎";
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return "";
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / 1048576).toFixed(1) + " MB";
-}
-
-// eslint-disable-next-line no-unused-vars
-async function uploadDocument(file, tenantId, token) {
-  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const path = `${safeId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" },
-    body: file,
-  });
-  if (!r.ok) throw new Error("Upload failed");
-  return path;
-}
-
-// eslint-disable-next-line no-unused-vars
-async function listDocuments(tenantId, token) {
-  const safePath = tenantId.split("/").map(seg => seg.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_")).join("/");
-  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-    method: "POST",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ prefix: safePath + "/", limit: 100, sortBy: { column: "created_at", order: "desc" } }),
-  });
-  if (!r.ok) return [];
+async function taskList(token, orgId){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/tasks?org_id=eq.${orgId}&order=due_date.asc.nullslast,created_at.asc`,{headers:authH(token)});
+  if(!r.ok) throw new Error(`${r.status}`);
   return r.json();
 }
-
-async function deleteDocument(path, token) {
-  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`, {
-    method: "DELETE",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
+async function taskSave(task,token){
+  const clean={...task};
+  if(!clean.due_date) clean.due_date=null;
+  if(!clean.assigned_to) clean.assigned_to=null;
+  if(!clean.linked_unit) clean.linked_unit=null;
+  if(!clean.notes) clean.notes=null;
+  if(!clean.category) clean.category=null;
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/tasks`,{
+    method:"POST",
+    headers:{...authH(token),Prefer:"return=representation"},
+    body:JSON.stringify(clean)
   });
-  return r.ok;
+  return r.ok?r.json():null;
 }
-
-async function getSignedUrl(path, token) {
-  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${path}`, {
-    method: "POST",
-    headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ expiresIn: 3600 }),
-  });
-  const d = await r.json();
-  return d.signedURL ? `${SUPABASE_URL}/storage/v1${d.signedURL}` : null;
-}
-
-// eslint-disable-next-line no-unused-vars
-async function saveDocTag(filePath, tenantId, tag, originalName, orgId, token) {
-  await fetch(`${SUPABASE_URL}/rest/v1/document_tags`, {
-    method: "POST",
-    headers: { ...authH(token), Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify({ file_path: filePath, tenant_id: tenantId, tag, original_name: originalName, org_id: orgId }),
+async function taskUpdate(id,data,token){
+  const clean={...data};
+  if(clean.due_date==="") clean.due_date=null;
+  if(clean.assigned_to==="") clean.assigned_to=null;
+  if(clean.linked_unit==="") clean.linked_unit=null;
+  if(clean.notes==="") clean.notes=null;
+  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`,{
+    method:"PATCH",
+    headers:{...authH(token),Prefer:"return=minimal"},
+    body:JSON.stringify(clean)
   });
 }
-
-// eslint-disable-next-line no-unused-vars
-async function getDocTags(tenantId, orgId, token) {
-  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&file_path=like.${encodeURIComponent(safeId + "/%")}`,
-    { headers: authH(token) }
-  );
-  return r.ok ? r.json() : [];
-}
-
-async function getAllDocTags(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/document_tags?org_id=eq.${orgId}&order=id.desc`,
-    { headers: authH(token) }
-  );
-  return r.ok ? r.json() : [];
-}
-
-async function deleteDocTag(filePath, token) {
-  await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}`, {
-    method: "DELETE", headers: authH(token),
+async function taskDelete(id,token){
+  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`,{
+    method:"DELETE",headers:authH(token)
   });
 }
 
-async function updateDocTag(filePath, tag, token) {
-  const getR = await fetch(
-    `${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(filePath)}&select=id`,
-    { headers: authH(token) }
-  );
-  const rows = await getR.json();
-  if (Array.isArray(rows) && rows[0]?.id) {
-    await fetch(`${SUPABASE_URL}/rest/v1/document_tags?id=eq.${rows[0].id}`, {
-      method: "PATCH",
-      headers: { ...authH(token), Prefer: "return=minimal" },
-      body: JSON.stringify({ tag }),
-    });
+function nextOccurrence(dueDate,recurrence){
+  if(!dueDate||recurrence==="None") return null;
+  const d=new Date(dueDate);
+  if(recurrence==="Weekly") d.setDate(d.getDate()+7);
+  else if(recurrence==="Fortnightly") d.setDate(d.getDate()+14);
+  else if(recurrence==="Monthly") d.setMonth(d.getMonth()+1);
+  else if(recurrence==="Quarterly") d.setMonth(d.getMonth()+3);
+  else if(recurrence==="Annually") d.setFullYear(d.getFullYear()+1);
+  return d.toISOString().slice(0,10);
+}
+
+const BLANK_TASK = {title:"",category:"General",priority:"Medium",assigned_to:"",due_date:"",recurrence:"None",reminder_days:7,notes:"",status:"Open"};
+
+async function taskCommentList(taskId, token){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/task_comments?task_id=eq.${taskId}&order=created_at.asc`,{headers:authH(token)});
+  return r.ok?r.json():[];
+}
+async function taskCommentSave(comment, token){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/task_comments`,{
+    method:"POST",
+    headers:{...authH(token),Prefer:"return=representation"},
+    body:JSON.stringify(comment)
+  });
+  return r.ok?r.json():null;
+}
+async function uploadTaskPhoto(taskId, file, token){
+  const ext=file.name.split(".").pop();
+  const path=`tasks/${taskId}/${Date.now()}.${ext}`;
+  const r=await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${path}`,{
+    method:"POST",
+    headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${token}`,Prefer:"return=representation","Content-Type":file.type},
+    body:file
+  });
+  return r.ok?path:null;
+}
+
+const TASKS_SETUP_SQL = `create table tasks (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  category text,
+  priority text default 'Medium',
+  assigned_to text,
+  due_date date,
+  recurrence text default 'None',
+  reminder_days integer default 7,
+  notes text,
+  status text default 'Open',
+  linked_unit text,
+  created_at timestamptz default now()
+);
+alter table tasks enable row level security;
+create policy "Authenticated users only" on tasks for all to authenticated using (true) with check (true);`;
+
+function TasksPage({token,showToast,data=[],orgId}){
+  const [tasks,setTasks]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [showForm,setShowForm]=useState(false);
+  const [editTask,setEditTask]=useState(null);
+  const [form,setForm]=useState({...BLANK_TASK});
+  const [saving,setSaving]=useState(false);
+  const [filterStatus,setFilterStatus]=useState("active"); // active | done | all
+  const [filterCat,setFilterCat]=useState("all");
+  const [dbError,setDbError]=useState(false);
+  const [workerView,setWorkerView]=useState(null);
+  const [viewTask,setViewTask]=useState(null); // task detail/comments modal
+  const [taskComments,setTaskComments]=useState([]); // comments for viewTask
+  const [commentText,setCommentText]=useState("");
+  const [addingComment,setAddingComment]=useState(false);
+  const [doneModal,setDoneModal]=useState(null); // task being marked done - ask for completion note
+  const [doneNote,setDoneNote]=useState("");
+  const [selectedTasks,setSelectedTasks]=useState(new Set());
+  const [viewMode,setViewMode]=useState("week"); // week | list
+
+  const u=k=>e=>setForm(f=>({...f,[k]:e.target.value}));
+
+  // Load comments when viewTask changes
+  useEffect(()=>{
+    if(!viewTask) return;
+    taskCommentList(viewTask.id, token).then(c=>setTaskComments(Array.isArray(c)?c:[]));
+  },[viewTask, token]);
+
+  async function addComment(){
+    if(!commentText.trim()) return;
+    setAddingComment(true);
+    const saved=await taskCommentSave({task_id:viewTask.id, comment:commentText, created_at:new Date().toISOString()}, token);
+    const rec=Array.isArray(saved)?saved[0]:saved;
+    if(rec?.id) setTaskComments(c=>[...c,rec]);
+    setCommentText("");
+    setAddingComment(false);
   }
-}
 
-// ─── Tenant Documents (used inside Edit Modal) ────────────────────────────────
-function TenantDocuments({ tenantId, orgId, token }) {
-  const safeId = (tenantId || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const [docs, setDocs] = useState([]);
-  const [tags, setTags] = useState({});
-  const [uploading, setUploading] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const [viewerDoc, setViewerDoc] = useState(null);
-  const [tagFilter, setTagFilter] = useState("all");
-  const inputRef = useRef(null);
+  function toggleSelect(id){setSelectedTasks(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});}
 
-  async function reload() {
-    const [d, t] = await Promise.all([
-      listDocuments(safeId, token),
-      getDocTags(safeId, orgId, token),
-    ]);
-    setDocs(Array.isArray(d) ? d : []);
-    const tagMap = {};
-    (Array.isArray(t) ? t : []).forEach(r => { tagMap[r.file_path] = r; });
-    setTags(tagMap);
-  }
-
-  useEffect(() => {
-    if (!tenantId || !token) return;
-    reload();
-  }, [tenantId, token]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function handleUpload(files) {
-    if (!files || !files.length) return;
-    setUploading(true);
-    let failed = 0;
-    for (const file of Array.from(files)) {
-      try {
-        const path = await uploadDocument(file, safeId, token);
-        await saveDocTag(path, safeId, "Other", file.name, orgId, token);
-      } catch { failed++; }
+  async function handleBulkDone(){
+    if(selectedTasks.size===0) return;
+    if(!window.confirm(`Mark ${selectedTasks.size} task${selectedTasks.size!==1?"s":""} as done?`)) return;
+    for(const id of selectedTasks){
+      const task=tasks.find(t=>t.id===id);
+      if(task) await handleMarkDone(task, true); // silent=true
     }
-    await reload();
-    setUploading(false);
-    if (failed > 0) alert(`⚠️ ${failed} file(s) failed to upload.`);
+    setSelectedTasks(new Set());
+    showToast(`✅ ${selectedTasks.size} tasks marked as done`);
   }
 
-  async function handleDelete(doc) {
-    const path = `${safeId}/${doc.name}`;
-    if (!window.confirm(`Delete "${doc.name.replace(/^\d+_/, "")}"?`)) return;
-    await deleteDocument(path, token);
-    await deleteDocTag(path, token);
-    await reload();
+  useEffect(()=>{
+    taskList(token)
+      .then(t=>{setTasks(Array.isArray(t)?t:[]);setDbError(false);setLoading(false);})
+      .catch(()=>{setDbError(true);setTasks([]);setLoading(false);});
+  },[token]);
+
+  function openAdd(){setForm({...BLANK_TASK});setEditTask(null);setShowForm(true);}
+  function openEdit(t){setForm({...t});setEditTask(t);setShowForm(true);}
+
+  async function handleSave(){
+    if(!form.title.trim()){showToast("❌ Please enter a task title");return;}
+    setSaving(true);
+    try{
+      if(editTask){
+        await taskUpdate(editTask.id,form,token);
+        setTasks(ts=>ts.map(t=>t.id===editTask.id?{...t,...form}:t));
+        showToast("✅ Task updated");
+      } else {
+        const saved=await taskSave({...form, org_id: orgId},token);
+        const rec=Array.isArray(saved)?saved[0]:saved;
+        if(rec?.id){setTasks(ts=>[...ts,rec]);showToast("✅ Task added");}
+        else{showToast("❌ Could not save task — please try again");}
+      }
+      setShowForm(false);
+    }catch(e){showToast("❌ Save failed: "+e.message);}
+    setSaving(false);
   }
 
-  async function handleTagChange(filePath, newTag) {
-    await updateDocTag(filePath, newTag, token);
-    const fresh = await getDocTags(safeId, orgId, token);
-    const tagMap = {};
-    (Array.isArray(fresh) ? fresh : []).forEach(r => { tagMap[r.file_path] = r; });
-    setTags(tagMap);
+  async function handleMarkDone(task, silent=false){
+    await taskUpdate(task.id,{status:"Done"},token);
+    let updated=[...tasks.map(t=>t.id===task.id?{...t,status:"Done"}:t)];
+    if(task.recurrence&&task.recurrence!=="None"&&task.due_date){
+      const nextDate=nextOccurrence(task.due_date,task.recurrence);
+      const nextTask={...task,status:"Open",due_date:nextDate,id:undefined,created_at:undefined};
+      delete nextTask.id; delete nextTask.created_at;
+      const saved=await taskSave({...nextTask, org_id: orgId},token);
+      const rec=Array.isArray(saved)?saved[0]:saved;
+      if(rec?.id){updated=[...updated,rec];if(!silent)showToast(`✅ Done · Next ${task.recurrence.toLowerCase()} task created for ${nextDate}`);}
+    } else {
+      if(!silent)showToast("✅ Task marked as done");
+    }
+    setTasks(updated);
   }
 
-  const allDocs = docs.filter(d => tagFilter === "all" || tags[`${safeId}/${d.name}`]?.tag === tagFilter);
-
-  return (
-    <div>
-      {/* Tag filters */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10, justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {["all", ...DOC_TAGS].map(t => (
-            <button
-              key={t}
-              className={`sp-btn ${tagFilter === t ? "active" : ""}`}
-              style={{ fontSize: 11, padding: "3px 8px" }}
-              onClick={() => setTagFilter(t)}
-            >
-              {t === "all" ? "All" : t}
-            </button>
-          ))}
-        </div>
-        {docs.length > 0 && (
-          <button className="sp-btn" style={{ fontSize: 11 }} onClick={async () => {
-            for (const doc of docs) {
-              const path = `${safeId}/${doc.name}`;
-              try {
-                const url = await getSignedUrl(path, token);
-                if (!url) continue;
-                const r = await fetch(url);
-                const blob = await r.blob();
-                const tagInfo = tags[path];
-                const displayName = (tagInfo?.original_name || doc.name).replace(/^\d+_/, "");
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(blob);
-                a.download = displayName;
-                a.click();
-                URL.revokeObjectURL(a.href);
-                await new Promise(res => setTimeout(res, 300));
-              } catch {}
-            }
-          }}>⬇️ Download All</button>
-        )}
-      </div>
-
-      {/* Upload zone */}
-      <div
-        style={{
-          border: `2px dashed ${dragOver ? "var(--gold)" : "var(--mist2)"}`,
-          borderRadius: "var(--r)",
-          padding: "16px",
-          textAlign: "center",
-          cursor: "pointer",
-          background: dragOver ? "#FFFDF5" : "var(--mist)",
-          transition: "all .15s",
-          marginBottom: 10,
-        }}
-        onClick={() => inputRef.current?.click()}
-        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={e => { e.preventDefault(); setDragOver(false); handleUpload(e.dataTransfer.files); }}
-      >
-        <input ref={inputRef} type="file" multiple onChange={e => handleUpload(e.target.files)} style={{ display: "none" }} />
-        <div style={{ fontSize: 20, marginBottom: 4 }}>📎</div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--navy)" }}>Drop files here or click to upload</div>
-        <div style={{ fontSize: 11, color: "var(--sub)", marginTop: 2 }}>Any file type supported</div>
-        {uploading && <div style={{ marginTop: 6, fontSize: 12, color: "var(--gold)" }}>⏳ Uploading…</div>}
-      </div>
-
-      {/* Document list */}
-      {allDocs.length > 0 && (
-        <div style={{ border: "1px solid var(--border)", borderRadius: "var(--r)", overflow: "hidden" }}>
-          {allDocs.map(doc => {
-            const path = `${safeId}/${doc.name}`;
-            const tagInfo = tags[path];
-            const displayName = (tagInfo?.original_name || doc.name).replace(/^\d+_/, "");
-            return (
-              <div key={doc.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
-                <div style={{ fontSize: 20, flexShrink: 0 }}>{fileIcon(displayName)}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-                    <select
-                      key={tagInfo?.tag || "none"}
-                      style={{ fontSize: 11, padding: "2px 5px", borderRadius: 4, border: "1px solid var(--mist2)", color: "var(--navy)", background: "var(--mist)", fontFamily: "var(--fb)" }}
-                      defaultValue={tagInfo?.tag || ""}
-                      onChange={e => e.target.value && handleTagChange(path, e.target.value)}
-                    >
-                      <option value="">{tagInfo?.tag || "— Tag —"}</option>
-                      {DOC_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                    <span style={{ fontSize: 11, color: "var(--sub)" }}>{formatBytes(doc.metadata?.size)}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-                  <button className="sp-btn" style={{ fontSize: 11, padding: "3px 8px" }} onClick={async () => {
-                    const url = await getSignedUrl(path, token);
-                    if (url) setViewerDoc({ url, name: displayName });
-                  }}>👁</button>
-                  <button className="sp-btn sp-btn-danger" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => handleDelete(doc)}>🗑️</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {allDocs.length === 0 && !uploading && (
-        <p style={{ fontSize: 12, color: "var(--sub)", textAlign: "center", marginTop: 8 }}>
-          {tagFilter === "all" ? "No documents yet" : "No documents with this tag"}
-        </p>
-      )}
-
-      {viewerDoc && <DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={() => setViewerDoc(null)} />}
-    </div>
-  );
-}
-
-// ─── Doc Viewer ───────────────────────────────────────────────────────────────
-function DocViewer({ url, name, onClose }) {
-  const ext = (name || "").split(".").pop().toLowerCase();
-  const isPdf = ext === "pdf";
-  const isImg = ["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext);
-
-  async function handleDownload() {
-    try {
-      const r = await fetch(url);
-      const blob = await r.blob();
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch { window.open(url, "_blank"); }
+  async function handleMarkDoneWithNote(task, note){
+    await handleMarkDone(task);
+    if(note&&note.trim()){
+      await taskCommentSave({task_id:task.id, comment:`✅ Completed: ${note}`, created_at:new Date().toISOString()}, token);
+    }
+    setDoneModal(null);
+    setDoneNote("");
   }
 
-  return (
-    <div className="modal-ov" onClick={e => e.target === e.currentTarget && onClose()} style={{ zIndex: 2000 }}>
-      <div style={{ background: "#fff", borderRadius: "var(--r)", width: "90vw", maxWidth: 900, height: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,.25)", overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, color: "var(--navy)", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "60%" }}>{name}</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="sp-btn" onClick={handleDownload}>⬇️ Download</button>
-            <button className="sp-btn" onClick={() => window.open(url, "_blank")}>↗ Open in tab</button>
-            <button className="sp-btn" onClick={onClose}>✕ Close</button>
-          </div>
-        </div>
-        <div style={{ flex: 1, overflow: "hidden", background: "#F4F7FA", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {isPdf && <iframe src={url} title={name} style={{ width: "100%", height: "100%", border: "none" }} />}
-          {isImg && <img src={url} alt={name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", padding: 16 }} />}
-          {!isPdf && !isImg && (
-            <div style={{ textAlign: "center", padding: 40 }}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>{fileIcon(name)}</div>
-              <div style={{ fontSize: 14, color: "var(--sub)", marginBottom: 20 }}>{name}</div>
-              <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 20 }}>This file type cannot be previewed inline.</p>
-              <button className="sp-btn sp-btn-primary" onClick={handleDownload}>⬇️ Download file</button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Documents Page ───────────────────────────────────────────────────────────
-function DocumentsPage({ data, orgId, token, toast }) {
-  const [folders, setFolders] = useState([]);
-  const [folderDocs, setFolderDocs] = useState({});
-  const [allTags, setAllTags] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [loadingFolder, setLoadingFolder] = useState({});
-  const [expanded, setExpanded] = useState({});
-  const [viewerDoc, setViewerDoc] = useState(null);
-  const [q, setQ] = useState("");
-  const [tagFilter, setTagFilter] = useState("all");
-  const [storageError, setStorageError] = useState(false);
-
-  useEffect(() => {
-    if (!token || !orgId) return;
-    Promise.all([
-      fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-        method: "POST",
-        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prefix: "", limit: 500, delimiter: "/" }),
-      }).then(r => r.ok ? r.json() : []).catch(() => { setStorageError(true); return []; }),
-      getAllDocTags(orgId, token),
-    ]).then(([flds, tags]) => {
-      const validFolders = (Array.isArray(flds) ? flds : [])
-        .map(f => (f.name || "").replace(/\/$/, ""))
-        .filter(f => f && f !== "archive" && f !== "enquiry_archive");
-      setFolders(validFolders);
-      const tagMap = {};
-      (Array.isArray(tags) ? tags : []).forEach(r => { tagMap[r.file_path] = r; });
-      setAllTags(tagMap);
-      setLoading(false);
-    });
-  }, [token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function loadFolder(folderName) {
-    if (folderDocs[folderName]) return;
-    setLoadingFolder(l => ({ ...l, [folderName]: true }));
-    try {
-      const fr = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-        method: "POST",
-        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prefix: folderName + "/", limit: 200, sortBy: { column: "created_at", order: "desc" } }),
-      });
-      const files = await fr.json();
-      const realFiles = (Array.isArray(files) ? files : []).filter(f => f.id).map(f => ({
-        ...f, name: folderName + "/" + f.name, filename: f.name, path: folderName + "/" + f.name,
-      }));
-      setFolderDocs(d => ({ ...d, [folderName]: realFiles }));
-    } catch { setFolderDocs(d => ({ ...d, [folderName]: [] })); }
-    setLoadingFolder(l => ({ ...l, [folderName]: false }));
+  async function handleDelete(id){
+    if(!window.confirm("Delete this task?")) return;
+    await taskDelete(id,token);
+    setTasks(ts=>ts.filter(t=>t.id!==id));
+    showToast("🗑️ Task deleted");
   }
 
-  async function toggleExpand(folderName) {
-    const nowOpen = !expanded[folderName];
-    setExpanded(e => ({ ...e, [folderName]: nowOpen }));
-    if (nowOpen) await loadFolder(folderName);
+  async function handleReopen(task){
+    await taskUpdate(task.id,{status:"Open"},token);
+    setTasks(ts=>ts.map(t=>t.id===task.id?{...t,status:"Open"}:t));
+    setFilterStatus("active");
+    showToast("↩️ Task reopened");
   }
 
-  async function handleDelete(path, folderName) {
-    if (!window.confirm("Delete this document?")) return;
-    await deleteDocument(path, token);
-    await deleteDocTag(path, token);
-    setFolderDocs(d => ({ ...d, [folderName]: (d[folderName] || []).filter(f => f.path !== path) }));
-    toast("Document deleted", "success");
+  const today=new Date(); today.setHours(0,0,0,0);
+  function isOverdue(t){return t.due_date&&new Date(t.due_date)<today&&t.status!=="Done";}
+  function isDueSoon(t){
+    if(!t.due_date||t.status==="Done") return false;
+    const d=new Date(t.due_date);
+    const diff=Math.ceil((d-today)/86400000);
+    return diff>=0&&diff<=(t.reminder_days||7);
   }
 
-  async function handleTagChange(filePath, newTag) {
-    await updateDocTag(filePath, newTag, token);
-    const fresh = await getAllDocTags(orgId, token);
-    const tagMap = {};
-    (Array.isArray(fresh) ? fresh : []).forEach(r => { tagMap[r.file_path] = r; });
-    setAllTags(tagMap);
-    toast("Tag saved", "success");
-  }
-
-  function getFolderLabel(folderName) {
-    const safeId = folderName.replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-    const tenant = data.find(t => {
-      const ts = (t.id || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-      return ts === safeId || t.id === folderName;
-    });
-    if (tenant) return tenant.label || tenant.tenant || ("Unit " + folderName);
-    if (folderName.startsWith("enquiry_")) return `📋 CRM Enquiry`;
-    return "Unit " + folderName;
-  }
-
-  const filteredFolders = folders.filter(f => {
-    const label = getFolderLabel(f);
-    return !q || label.toLowerCase().includes(q.toLowerCase()) || f.toLowerCase().includes(q.toLowerCase());
+  let filtered=tasks.filter(t=>{
+    if(filterStatus==="active") return t.status!=="Done";
+    if(filterStatus==="done") return t.status==="Done";
+    return true;
   });
+  if(filterCat!=="all") filtered=filtered.filter(t=>t.category===filterCat);
 
-  return (
-    <div className="page">
-      {storageError && (
-        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "14px 18px", marginBottom: 16, fontSize: 13, color: "#5D4037" }}>
-          <strong>⚙️ Storage not set up yet</strong><br />
-          You need to create a <strong>documents</strong> bucket in your Supabase project. Go to Supabase → Storage → New bucket → name it <code>documents</code> → set to Private.
+  const openCount=tasks.filter(t=>t.status!=="Done").length;
+  const overdueCount=tasks.filter(t=>isOverdue(t)).length;
+  const dueSoonCount=tasks.filter(t=>isDueSoon(t)&&!isOverdue(t)).length;
+
+  // Sort: overdue first, then by due date, then no date
+  filtered=[
+    ...filtered.filter(t=>isOverdue(t)).sort((a,b)=>new Date(a.due_date)-new Date(b.due_date)),
+    ...filtered.filter(t=>!isOverdue(t)&&t.due_date).sort((a,b)=>new Date(a.due_date)-new Date(b.due_date)),
+    ...filtered.filter(t=>!t.due_date),
+  ];
+
+  // Get unit names for linked unit dropdown
+  const unitOptions=data.filter(u=>u.id).sort((a,b)=>(a.id||"").localeCompare(b.id||""));
+
+  return(
+    <div>
+      {dbError&&(
+        <div style={{background:"#FFF8E1",border:"1.5px solid #FFD54F",borderRadius:8,padding:"14px 18px",marginBottom:18,fontSize:13,color:"#5D4037"}}>
+          <strong>⚙️ One-time setup required</strong> — Run this SQL in your <a href="https://supabase.com/dashboard/project/lbealsgloqoepazfrgbj/sql/new" target="_blank" rel="noreferrer" style={{color:"var(--navy)"}}>Supabase SQL editor</a>:<br/><br/>
+          <code style={{display:"block",background:"#F5F5F5",padding:"10px 12px",borderRadius:6,fontSize:12,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{TASKS_SETUP_SQL}</code>
         </div>
       )}
 
-      {/* Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-        <input
-          style={{ fontFamily: "var(--fb)", fontSize: 14, padding: "8px 14px", border: "1.5px solid var(--mist2)", borderRadius: "var(--r)", outline: "none", width: 240, color: "var(--text)" }}
-          placeholder="Search by tenant or unit…"
-          value={q}
-          onChange={e => setQ(e.target.value)}
-        />
-        {["all", ...DOC_TAGS].map(t => (
-          <button key={t} className={`sp-btn ${tagFilter === t ? "active" : ""}`} style={{ fontSize: 11 }} onClick={() => setTagFilter(t)}>
-            {t === "all" ? "All Tags" : t}
+      {/* Summary row */}
+      <div className="kg" style={{gridTemplateColumns:"repeat(3,1fr)",marginBottom:20}}>
+        <div className="kc">
+          <div className="kl">Open Tasks</div>
+          <div className="kv">{openCount}</div>
+          <div className="ks">{tasks.length} total</div>
+        </div>
+        <div className="kc" style={{background:overdueCount>0?PRIORITY_BG.Urgent:""}}>
+          <div className="kl">Overdue</div>
+          <div className="kv" style={{color:overdueCount>0?PRIORITY_COLOR.Urgent:""}}>{overdueCount}</div>
+          <div className="ks">Past due date</div>
+        </div>
+        <div className="kc" style={{background:dueSoonCount>0?PRIORITY_BG.High:""}}>
+          <div className="kl">Due Soon</div>
+          <div className="kv" style={{color:dueSoonCount>0?PRIORITY_COLOR.High:""}}>{dueSoonCount}</div>
+          <div className="ks">Within reminder window</div>
+        </div>
+      </div>
+
+      {/* View mode + Filters + Add */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        <button className={`btn btn-sm ${viewMode==="week"?"btn-primary":"btn-outline"}`} onClick={()=>setViewMode("week")}>📅 This Week</button>
+        <button className={`btn btn-sm ${viewMode==="list"?"btn-primary":"btn-outline"}`} onClick={()=>setViewMode("list")}>☰ All Tasks</button>
+        <div style={{width:1,height:20,background:"#E4EAF2",margin:"0 4px"}}/>
+        {viewMode==="list"&&["active","done","all"].map(s=>(
+          <button key={s} className={`btn btn-sm ${filterStatus===s?"btn-primary":"btn-outline"}`} onClick={()=>setFilterStatus(s)}>
+            {s==="active"?"Open":s==="done"?"Done":"All"}
           </button>
         ))}
+        <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{fontSize:12,padding:"5px 10px",border:"1px solid #D0DAE8",borderRadius:7,fontFamily:"var(--fb)"}}>
+          <option value="all">All categories</option>
+          {TASK_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+        </select>
+        {selectedTasks.size>0&&(
+          <button className="btn btn-success btn-sm" onClick={handleBulkDone}>✓ Done ({selectedTasks.size})</button>
+        )}
+        {selectedTasks.size>0&&(
+          <button className="btn btn-outline btn-sm" onClick={()=>setSelectedTasks(new Set())}>✕ Clear</button>
+        )}
+        <button className="btn btn-primary btn-sm" style={{marginLeft:"auto"}} onClick={openAdd}>+ Add Task</button>
       </div>
 
-      {loading && <div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div>}
-
-      {!loading && filteredFolders.length === 0 && (
-        <div className="card" style={{ textAlign: "center", padding: 48 }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>📁</div>
-          <div style={{ fontFamily: "var(--fh)", fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No documents yet</div>
-          <div style={{ fontSize: 13, color: "var(--sub)" }}>Documents are uploaded from the Edit screen on each tenant or unit.</div>
-        </div>
-      )}
-
-      {filteredFolders.map(folderName => {
-        const label = getFolderLabel(folderName);
-        const isOpen = expanded[folderName];
-        const docs = (folderDocs[folderName] || []).filter(doc => tagFilter === "all" || allTags[doc.path]?.tag === tagFilter);
-        const isLoading = loadingFolder[folderName];
-        const totalCount = folderDocs[folderName]?.length;
-
-        return (
-          <div key={folderName} className="card" style={{ marginBottom: 8, padding: 0, overflow: "hidden" }}>
-            <div
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", cursor: "pointer" }}
-              onClick={() => toggleExpand(folderName)}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 16, color: "var(--navy)" }}>{isOpen ? "▾" : "▸"}</span>
-                <span style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{label}</span>
-                {totalCount != null && (
-                  <span style={{ fontSize: 11, padding: "2px 8px", background: "var(--mist)", border: "1px solid var(--mist2)", borderRadius: 99, color: "var(--sub)" }}>
-                    {totalCount} file{totalCount !== 1 ? "s" : ""}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {isOpen && (
-              <div style={{ borderTop: "1px solid var(--border)" }}>
-                {isLoading && <div style={{ padding: "14px 18px", color: "var(--sub)", fontSize: 13 }}>⏳ Loading…</div>}
-                {!isLoading && docs.length === 0 && (
-                  <div style={{ padding: "14px 18px", color: "var(--sub)", fontSize: 13 }}>
-                    No documents{tagFilter !== "all" ? " with this tag" : ""}
-                  </div>
-                )}
-                {!isLoading && docs.map(doc => {
-                  const tagInfo = allTags[doc.path];
-                  const displayName = (tagInfo?.original_name || doc.filename).replace(/^\d+_/, "");
-                  return (
-                    <div key={doc.path} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid var(--border)" }}>
-                      <div style={{ fontSize: 22, flexShrink: 0 }}>{fileIcon(displayName)}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
-                          <select
-                            key={tagInfo?.tag || "none"}
-                            style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid var(--mist2)", color: "var(--navy)", background: "var(--mist)", fontFamily: "var(--fb)" }}
-                            defaultValue={tagInfo?.tag || ""}
-                            onChange={e => e.target.value && handleTagChange(doc.path, e.target.value)}
-                          >
-                            <option value="">{tagInfo?.tag || "— Tag —"}</option>
-                            {DOC_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                          <span style={{ fontSize: 11, color: "var(--sub)" }}>{formatBytes(doc.metadata?.size)}</span>
-                          {doc.created_at && <span style={{ fontSize: 11, color: "var(--sub)" }}>{new Date(doc.created_at).toLocaleDateString("en-GB")}</span>}
-                        </div>
+      {/* This Week view */}
+      {viewMode==="week"&&(()=>{
+        const tod=new Date();tod.setHours(0,0,0,0);
+        const days=[];
+        for(let i=0;i<7;i++){const d=new Date(tod);d.setDate(d.getDate()+i);days.push(d);}
+        const overdue=tasks.filter(t=>t.status!=="Done"&&t.due_date&&new Date(t.due_date)<tod);
+        return(
+          <div>
+            {overdue.length>0&&(
+              <div className="card" style={{marginBottom:12,border:"1.5px solid #FFCDD2"}}>
+                <div className="ch" style={{background:"#FFF0EE"}}>
+                  <div className="ct" style={{color:"var(--danger)"}}>⚠️ Overdue ({overdue.length})</div>
+                </div>
+                {overdue.map(task=>{
+                  return(
+                    <div key={task.id} style={{display:"flex",alignItems:"flex-start",gap:12,padding:"11px 16px",borderBottom:"1px solid #FFCDD2"}}>
+                      <div style={{flexShrink:0}}><button className="btn btn-success btn-sm" onClick={()=>{setDoneModal(task);setDoneNote("");}}>✓ Done</button></div>
+                      <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>{setViewTask(task);setCommentText("");}}>
+                        <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{task.title}</div>
+                        <div style={{fontSize:11,color:"var(--danger)"}}>📅 Was due: {new Date(task.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})} {task.assigned_to&&`· 👤 ${task.assigned_to}`}</div>
                       </div>
-                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                        <button className="sp-btn" style={{ fontSize: 11 }} onClick={async () => {
-                          const url = await getSignedUrl(doc.path, token);
-                          if (url) setViewerDoc({ url, name: displayName });
-                        }}>👁 View</button>
-                        <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleDelete(doc.path, folderName)}>🗑️</button>
-                      </div>
+                      <button className="btn btn-outline btn-sm" onClick={e=>{e.stopPropagation();openEdit(task);}}>Edit</button>
                     </div>
                   );
                 })}
               </div>
             )}
+            {days.map(day=>{
+              const ds=day.toISOString().slice(0,10);
+              const dayTasks=tasks.filter(t=>t.status!=="Done"&&t.due_date===ds);
+              const isToday=ds===tod.toISOString().slice(0,10);
+              return(
+                <div key={ds} className="card" style={{marginBottom:10,opacity:dayTasks.length===0?0.5:1}}>
+                  <div className="ch" style={{background:isToday?"#EEF4FF":"",paddingBottom:dayTasks.length===0?14:0}}>
+                    <div className="ct" style={{color:isToday?"var(--navy)":"var(--text)",fontSize:13}}>
+                      {isToday?"Today — ":""}{day.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short"})}
+                    </div>
+                    {dayTasks.length===0&&<span style={{fontSize:12,color:"var(--sub)"}}>No tasks</span>}
+                  </div>
+                  {dayTasks.map(task=>{
+                  const overdue=isOverdue(task);
+                  const soon=isDueSoon(task)&&!overdue;
+                  return(
+                    <div key={task.id} style={{display:"flex",alignItems:"flex-start",gap:12,padding:"11px 16px",borderBottom:"1px solid #F0F4FA",background:overdue?PRIORITY_BG.Urgent:soon?PRIORITY_BG.High:""}}>
+                      <div style={{flexShrink:0}}>
+                        <button className="btn btn-success btn-sm" onClick={()=>{setDoneModal(task);setDoneNote("");}}>✓ Done</button>
+                      </div>
+                      <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>{setViewTask(task);setCommentText("");}}>
+                        <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{task.title}</div>
+                        <div style={{fontSize:11,color:"var(--sub)",display:"flex",gap:10,flexWrap:"wrap"}}>
+                          <span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:PRIORITY_BG[task.priority],color:PRIORITY_COLOR[task.priority],fontWeight:600}}>{task.priority}</span>
+                          {task.assigned_to&&<span style={{cursor:"pointer",color:"var(--navy)",fontWeight:500,textDecoration:"underline"}} onClick={e=>{e.stopPropagation();setWorkerView(task.assigned_to);}}>👤 {task.assigned_to}</span>}
+                          {task.linked_unit&&<span>📦 Unit {task.linked_unit}</span>}
+                          {task.recurrence&&task.recurrence!=="None"&&<span>🔁 {task.recurrence}</span>}
+                        </div>
+                      </div>
+                      <button className="btn btn-outline btn-sm" onClick={e=>{e.stopPropagation();openEdit(task);}}>Edit</button>
+                    </div>
+                  );
+                })}
+                </div>
+              );
+            })}
           </div>
         );
-      })}
+      })()}
 
-      {viewerDoc && <DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={() => setViewerDoc(null)} />}
-    </div>
-  );
-}
-
-// ─── Task helpers ─────────────────────────────────────────────────────────────
-const TASK_CATEGORIES = ["Storage", "Residential", "Commercial", "General"];
-const TASK_PRIORITIES = ["Low", "Medium", "High", "Urgent"];
-const TASK_STATUSES = ["Open", "In Progress", "Done"];
-const TASK_RECURRENCE = ["None", "Weekly", "Fortnightly", "Monthly", "Quarterly", "Annually"];
-const PRIORITY_COLOR = { Low: "#5A6E8A", Medium: "#C9A84C", High: "#E67E22", Urgent: "#C0392B" };
-const PRIORITY_BG = { Low: "#F0F4FA", Medium: "#FFFBEA", High: "#FFF3E0", Urgent: "#FFF0EE" };
-const BLANK_TASK = { title: "", category: "General", priority: "Medium", assigned_to: "", due_date: "", recurrence: "None", reminder_days: 7, notes: "", status: "Open", linked_unit: "" };
-
-// eslint-disable-next-line no-unused-vars
-async function loginLogRecord(email, token) {
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/login_log`, {
-      method: "POST",
-      headers: { ...authH(token), Prefer: "return=minimal" },
-      body: JSON.stringify({ email, logged_in_at: new Date().toISOString() }),
-    });
-  } catch {}
-}
-
-async function taskList(orgId, token) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/tasks?org_id=eq.${orgId}&order=due_date.asc.nullslast,created_at.asc`,
-    { headers: authH(token) }
-  );
-  if (!r.ok) throw new Error(`${r.status}`);
-  return r.json();
-}
-
-async function taskSave(task, token) {
-  const clean = { ...task };
-  if (!clean.due_date) clean.due_date = null;
-  if (!clean.assigned_to) clean.assigned_to = null;
-  if (!clean.linked_unit) clean.linked_unit = null;
-  if (!clean.notes) clean.notes = null;
-  if (!clean.category) clean.category = null;
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
-    method: "POST",
-    headers: { ...authH(token), Prefer: "return=representation" },
-    body: JSON.stringify(clean),
-  });
-  return r.ok ? r.json() : null;
-}
-
-async function taskUpdate(id, data, token) {
-  const clean = { ...data };
-  if (clean.due_date === "") clean.due_date = null;
-  if (clean.assigned_to === "") clean.assigned_to = null;
-  if (clean.linked_unit === "") clean.linked_unit = null;
-  if (clean.notes === "") clean.notes = null;
-  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
-    method: "PATCH",
-    headers: { ...authH(token), Prefer: "return=minimal" },
-    body: JSON.stringify(clean),
-  });
-}
-
-async function taskDelete(id, token) {
-  await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
-    method: "DELETE", headers: authH(token),
-  });
-}
-
-function nextOccurrence(dueDate, recurrence) {
-  if (!dueDate || recurrence === "None") return null;
-  const d = new Date(dueDate);
-  if (recurrence === "Weekly") d.setDate(d.getDate() + 7);
-  else if (recurrence === "Fortnightly") d.setDate(d.getDate() + 14);
-  else if (recurrence === "Monthly") d.setMonth(d.getMonth() + 1);
-  else if (recurrence === "Quarterly") d.setMonth(d.getMonth() + 3);
-  else if (recurrence === "Annually") d.setFullYear(d.getFullYear() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-// ─── Tasks Page ───────────────────────────────────────────────────────────────
-function TasksPage({ orgId, token, toast, data = [] }) {
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editTask, setEditTask] = useState(null);
-  const [form, setForm] = useState({ ...BLANK_TASK });
-  const [saving, setSaving] = useState(false);
-  const [filterStatus, setFilterStatus] = useState("active");
-  const [filterCat, setFilterCat] = useState("all");
-  const [dbError, setDbError] = useState(false);
-  const [workerView, setWorkerView] = useState(null);
-
-  const uf = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
-
-  useEffect(() => {
-    if (!orgId || !token) return;
-    taskList(orgId, token)
-      .then(t => { setTasks(Array.isArray(t) ? t : []); setDbError(false); setLoading(false); })
-      .catch(() => { setDbError(true); setTasks([]); setLoading(false); });
-  }, [orgId, token]);
-
-  function openAdd() { setForm({ ...BLANK_TASK, org_id: orgId }); setEditTask(null); setShowForm(true); }
-  function openEdit(t) { setForm({ ...t }); setEditTask(t); setShowForm(true); }
-
-  async function handleSave() {
-    if (!form.title.trim()) { toast("Please enter a task title", "error"); return; }
-    setSaving(true);
-    try {
-      if (editTask) {
-        await taskUpdate(editTask.id, form, token);
-        setTasks(ts => ts.map(t => t.id === editTask.id ? { ...t, ...form } : t));
-        toast("Task updated", "success");
-      } else {
-        const saved = await taskSave({ ...form, org_id: orgId }, token);
-        const rec = Array.isArray(saved) ? saved[0] : saved;
-        if (rec?.id) { setTasks(ts => [...ts, rec]); toast("Task added", "success"); }
-        else { toast("Could not save task", "error"); }
-      }
-      setShowForm(false);
-    } catch (e) { toast("Save failed: " + e.message, "error"); }
-    setSaving(false);
-  }
-
-  async function handleMarkDone(task) {
-    await taskUpdate(task.id, { status: "Done" }, token);
-    let updated = [...tasks.map(t => t.id === task.id ? { ...t, status: "Done" } : t)];
-    if (task.recurrence && task.recurrence !== "None" && task.due_date) {
-      const nextDate = nextOccurrence(task.due_date, task.recurrence);
-      const nextTask = { ...task, status: "Open", due_date: nextDate, org_id: orgId };
-      delete nextTask.id; delete nextTask.created_at;
-      const saved = await taskSave(nextTask, token);
-      const rec = Array.isArray(saved) ? saved[0] : saved;
-      if (rec?.id) { updated = [...updated, rec]; toast(`Done · Next ${task.recurrence.toLowerCase()} task created for ${nextDate}`, "success"); }
-    } else {
-      toast("Task marked as done", "success");
-    }
-    setTasks(updated);
-  }
-
-  async function handleDelete(id) {
-    if (!window.confirm("Delete this task?")) return;
-    await taskDelete(id, token);
-    setTasks(ts => ts.filter(t => t.id !== id));
-    toast("Task deleted", "success");
-  }
-
-  async function handleReopen(task) {
-    await taskUpdate(task.id, { status: "Open" }, token);
-    setTasks(ts => ts.map(t => t.id === task.id ? { ...t, status: "Open" } : t));
-    setFilterStatus("active");
-    toast("Task reopened", "success");
-  }
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  function isOverdue(t) { return t.due_date && new Date(t.due_date) < today && t.status !== "Done"; }
-  function isDueSoon(t) {
-    if (!t.due_date || t.status === "Done") return false;
-    const d = new Date(t.due_date);
-    const diff = Math.ceil((d - today) / 86400000);
-    return diff >= 0 && diff <= (t.reminder_days || 7);
-  }
-
-  let filtered = tasks.filter(t => {
-    if (filterStatus === "active") return t.status !== "Done";
-    if (filterStatus === "done") return t.status === "Done";
-    return true;
-  });
-  if (filterCat !== "all") filtered = filtered.filter(t => t.category === filterCat);
-
-  filtered = [
-    ...filtered.filter(t => isOverdue(t)).sort((a, b) => new Date(a.due_date) - new Date(b.due_date)),
-    ...filtered.filter(t => !isOverdue(t) && t.due_date).sort((a, b) => new Date(a.due_date) - new Date(b.due_date)),
-    ...filtered.filter(t => !t.due_date),
-  ];
-
-  const openCount = tasks.filter(t => t.status !== "Done").length;
-  const overdueCount = tasks.filter(t => isOverdue(t)).length;
-  const dueSoonCount = tasks.filter(t => isDueSoon(t) && !isOverdue(t)).length;
-  const unitOptions = data.filter(u => u.id).sort((a, b) => (a.id || "").localeCompare(b.id || ""));
-
-  return (
-    <div className="page">
-      {dbError && (
-        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "14px 18px", marginBottom: 18, fontSize: 13, color: "#5D4037" }}>
-          <strong>⚙️ One-time setup required</strong> — Run this SQL in your Supabase SQL editor:
-          <code style={{ display: "block", background: "#F5F5F5", padding: "10px 12px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", whiteSpace: "pre-wrap", marginTop: 8 }}>
-            {`create table tasks (\n  id uuid primary key default gen_random_uuid(),\n  org_id uuid,\n  title text not null,\n  category text,\n  priority text default 'Medium',\n  assigned_to text,\n  due_date date,\n  recurrence text default 'None',\n  reminder_days integer default 7,\n  notes text,\n  status text default 'Open',\n  linked_unit text,\n  created_at timestamptz default now()\n);\nalter table tasks disable row level security;\ngrant select, insert, update, delete on table tasks to anon, authenticated;`}
-          </code>
-        </div>
-      )}
-
-      {/* KPI cards */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
-        <div className="kpi-card">
-          <div className="kpi-label">Open Tasks</div>
-          <div className="kpi-value">{openCount}</div>
-          <div className="kpi-meta">{tasks.length} total</div>
-        </div>
-        <div className="kpi-card" style={{ background: overdueCount > 0 ? PRIORITY_BG.Urgent : "" }}>
-          <div className="kpi-label">Overdue</div>
-          <div className="kpi-value" style={{ color: overdueCount > 0 ? PRIORITY_COLOR.Urgent : "" }}>{overdueCount}</div>
-          <div className="kpi-meta">Past due date</div>
-        </div>
-        <div className="kpi-card" style={{ background: dueSoonCount > 0 ? PRIORITY_BG.High : "" }}>
-          <div className="kpi-label">Due Soon</div>
-          <div className="kpi-value" style={{ color: dueSoonCount > 0 ? PRIORITY_COLOR.High : "" }}>{dueSoonCount}</div>
-          <div className="kpi-meta">Within reminder window</div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["active", "Open"], ["done", "Done"], ["all", "All"]].map(([v, l]) => (
-          <button key={v} className={`sp-btn ${filterStatus === v ? "active" : ""}`} onClick={() => setFilterStatus(v)}>{l}</button>
-        ))}
-        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={{ fontSize: 12, padding: "6px 10px", border: "1.5px solid var(--mist2)", borderRadius: 7, fontFamily: "var(--fb)", color: "var(--text)" }}>
-          <option value="all">All categories</option>
-          {TASK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <button className="sp-btn sp-btn-primary" style={{ marginLeft: "auto" }} onClick={openAdd}>+ Add Task</button>
-      </div>
-
-      {/* Task list */}
-      <div className="card" style={{ padding: 0 }}>
-        {loading && <div style={{ padding: 24, textAlign: "center", color: "var(--sub)" }}>Loading…</div>}
-        {!loading && filtered.length === 0 && (
-          <div style={{ padding: 32, textAlign: "center", color: "var(--sub)" }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
-            {filterStatus === "active" ? "No open tasks — all clear!" : "No tasks found"}
+      {/* Task list (list mode) */}
+      {viewMode==="list"&&<div className="card">
+        {loading&&<div style={{padding:24,textAlign:"center",color:"var(--sub)"}}>Loading…</div>}
+        {!loading&&filtered.length===0&&(
+          <div style={{padding:32,textAlign:"center",color:"var(--sub)"}}>
+            <div style={{fontSize:32,marginBottom:8}}>✅</div>
+            {filterStatus==="active"?"No open tasks — all clear!":"No tasks found"}
           </div>
         )}
-        {!loading && filtered.map(task => {
-          const overdue = isOverdue(task);
-          const soon = isDueSoon(task) && !overdue;
-          const done = task.status === "Done";
-          return (
-            <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "13px 16px", borderBottom: "1px solid var(--border)", background: overdue ? PRIORITY_BG.Urgent : soon ? PRIORITY_BG.High : done ? "#FAFAFA" : "", opacity: done ? 0.7 : 1 }}>
-              <div style={{ flexShrink: 0, paddingTop: 2 }}>
+        {!loading&&filtered.map(task=>{
+          const overdue=isOverdue(task);
+          const soon=isDueSoon(task)&&!overdue;
+          const done=task.status==="Done";
+          return(
+            <div key={task.id} style={{display:"flex",alignItems:"flex-start",gap:12,padding:"13px 16px",borderBottom:"1px solid #F0F4FA",background:overdue?PRIORITY_BG.Urgent:soon?PRIORITY_BG.High:done?"#FAFAFA":"",opacity:done?0.7:1}}>
+              {!done&&<input type="checkbox" checked={selectedTasks.has(task.id)} onChange={()=>toggleSelect(task.id)} style={{marginTop:4,cursor:"pointer"}}/>}
+              {done&&<div style={{width:16}}/>}
+              <div style={{flexShrink:0}}>
                 {done
-                  ? <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => handleReopen(task)}>↩ Reopen</button>
-                  : <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={() => handleMarkDone(task)}>✓ Done</button>
+                  ?<button className="btn btn-outline btn-sm" onClick={()=>handleReopen(task)}>↩ Reopen</button>
+                  :<button className="btn btn-success btn-sm" onClick={()=>{setDoneModal(task);setDoneNote("");}}>✓ Done</button>
                 }
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
-                  <span style={{ fontSize: 13, fontWeight: done ? 400 : 600, color: done ? "var(--sub)" : "var(--text)", textDecoration: done ? "line-through" : "none" }}>{task.title}</span>
-                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: PRIORITY_BG[task.priority] || "#F0F4FA", color: PRIORITY_COLOR[task.priority] || "var(--sub)", fontWeight: 600 }}>{task.priority}</span>
-                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: "var(--mist)", color: "var(--sub)" }}>{task.category}</span>
-                  {task.recurrence && task.recurrence !== "None" && (
-                    <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: "#EEF4FF", color: "#3B5FA0" }}>🔁 {task.recurrence}</span>
-                  )}
+              <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>{setViewTask(task);setCommentText("");}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:3}}>
+                  <span style={{fontSize:13,fontWeight:done?400:600,color:done?"var(--sub)":"var(--text)",textDecoration:done?"line-through":"none"}}>{task.title}</span>
+                  <span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:PRIORITY_BG[task.priority]||"#F0F4FA",color:PRIORITY_COLOR[task.priority]||"var(--sub)",fontWeight:600}}>{task.priority}</span>
+                  <span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:"#F0F4FA",color:"var(--sub)"}}>{task.category}</span>
+                  {task.recurrence&&task.recurrence!=="None"&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:"#EEF4FF",color:"#3B5FA0"}}>🔁 {task.recurrence}</span>}
                 </div>
-                <div style={{ fontSize: 11, color: "var(--sub)", display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {task.due_date && (
-                    <span style={{ color: overdue ? "var(--danger)" : soon ? PRIORITY_COLOR.High : "var(--sub)", fontWeight: overdue || soon ? 600 : 400 }}>
-                      📅 {overdue ? "Overdue: " : soon ? "Due soon: " : "Due: "}{new Date(task.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                    </span>
-                  )}
-                  {task.assigned_to && (
-                    <span style={{ cursor: "pointer", color: "var(--navy)", fontWeight: 500, textDecoration: "underline" }} onClick={e => { e.stopPropagation(); setWorkerView(task.assigned_to); }}>
-                      👤 {task.assigned_to}
-                    </span>
-                  )}
-                  {task.linked_unit && <span>📦 Unit {task.linked_unit}</span>}
-                  {task.notes && <span style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>💬 {task.notes}</span>}
+                <div style={{fontSize:11,color:"var(--sub)",display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {task.due_date&&<span style={{color:overdue?"var(--danger)":soon?PRIORITY_COLOR.High:"var(--sub)",fontWeight:overdue||soon?600:400}}>📅 {overdue?"Overdue: ":soon?"Due soon: ":"Due: "}{new Date(task.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</span>}
+                  {task.assigned_to&&<span style={{cursor:"pointer",color:"var(--navy)",fontWeight:500,textDecoration:"underline"}} onClick={e=>{e.stopPropagation();setWorkerView(task.assigned_to);}}>👤 {task.assigned_to}</span>}
+                  {task.linked_unit&&<span>📦 Unit {task.linked_unit}</span>}
+                  {task.notes&&<span style={{maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>💬 {task.notes}</span>}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => openEdit(task)}>Edit</button>
-                <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={() => handleDelete(task.id)}>🗑️</button>
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <button className="btn btn-outline btn-sm" onClick={e=>{e.stopPropagation();openEdit(task);}}>Edit</button>
+                <button className="btn btn-outline btn-sm" style={{color:"var(--danger)"}} onClick={e=>{e.stopPropagation();handleDelete(task.id);}}>🗑️</button>
               </div>
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* Worker View Modal */}
-      {workerView && (() => {
-        const workerTasks = tasks.filter(t => t.assigned_to === workerView);
-        const open = workerTasks.filter(t => t.status !== "Done");
-        const done = workerTasks.filter(t => t.status === "Done");
-        const tod = new Date(); tod.setHours(0, 0, 0, 0);
-        return (
-          <div className="modal-ov" onClick={e => e.target === e.currentTarget && setWorkerView(null)}>
-            <div className="modal" style={{ maxWidth: 660, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
-              <div className="modal-header" style={{ flexShrink: 0 }}>
-                <div className="modal-title">👤 {workerView}</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button className="sp-btn" style={{ fontSize: 11 }} onClick={() => {
-                    const w = window.open("", "_blank");
-                    w.document.write(`<html><head><title>Tasks — ${workerView}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#0B1E3D}h1{font-size:18px;margin-bottom:4px}h2{font-size:13px;color:#5A6E8A;font-weight:normal;margin-bottom:20px}.task{padding:8px 0;border-bottom:1px solid #eee}.title{font-size:13px;font-weight:600;margin-bottom:3px}.meta{font-size:11px;color:#5A6E8A}@media print{body{padding:0}}</style></head><body>`);
-                    w.document.write(`<h1>Tasks — ${workerView}</h1><h2>Printed ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</h2>`);
-                    if (open.length > 0) {
+      {workerView&&(()=>{
+        const workerTasks=tasks.filter(t=>t.assigned_to===workerView);
+        const open=workerTasks.filter(t=>t.status!=="Done");
+        const done=workerTasks.filter(t=>t.status==="Done");
+        const today=new Date();today.setHours(0,0,0,0);
+        return(
+          <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setWorkerView(null)}>
+            <div className="modal" style={{maxWidth:660,maxHeight:"85vh",display:"flex",flexDirection:"column"}}>
+              <div className="mh" style={{flexShrink:0}}>
+                <div className="mt">👤 {workerView}</div>
+                <div style={{display:"flex",gap:8}}>
+                  <button className="btn btn-outline btn-sm" onClick={()=>{
+                    const el=document.getElementById("worker-print-area");
+                    if(!el) return;
+                    const w=window.open("","_blank");
+                    w.document.write(`<html><head><title>Tasks — ${workerView}</title><style>
+                      body{font-family:Arial,sans-serif;padding:24px;color:#0B1E3D}
+                      h1{font-size:18px;margin-bottom:4px}
+                      h2{font-size:13px;color:#5A6E8A;font-weight:normal;margin-bottom:20px}
+                      h3{font-size:13px;margin:16px 0 8px;border-bottom:1px solid #eee;padding-bottom:4px}
+                      .task{padding:8px 0;border-bottom:1px solid #f0f0f0}
+                      .title{font-size:13px;font-weight:600;margin-bottom:3px}
+                      .meta{font-size:11px;color:#5A6E8A}
+                      .badge{display:inline-block;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:600;margin-right:6px}
+                      @media print{body{padding:0}}
+                    </style></head><body>`);
+                    w.document.write(`<h1>Tasks — ${workerView}</h1>`);
+                    w.document.write(`<h2>Printed ${new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})}</h2>`);
+                    if(open.length>0){
                       w.document.write("<h3>Open Tasks</h3>");
-                      open.forEach(t => {
-                        const ov = t.due_date && new Date(t.due_date) < tod;
-                        w.document.write(`<div class="task"><div class="title">${t.title}</div><div class="meta">${t.priority} · ${t.category}${t.due_date ? " · Due: " + new Date(t.due_date).toLocaleDateString("en-GB") + (ov ? " (OVERDUE)" : "") : ""}${t.linked_unit ? " · Unit " + t.linked_unit : ""}${t.notes ? "<br>" + t.notes : ""}</div></div>`);
+                      open.forEach(t=>{
+                        const overdue=t.due_date&&new Date(t.due_date)<today;
+                        w.document.write(`<div class="task"><div class="title">${t.title}</div><div class="meta">${t.priority} · ${t.category}${t.due_date?" · Due: "+new Date(t.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})+(overdue?" (OVERDUE)":""):""}${t.linked_unit?" · Unit "+t.linked_unit:""}${t.recurrence&&t.recurrence!=="None"?" · "+t.recurrence:""}${t.notes?"<br>"+t.notes:""}</div></div>`);
                       });
                     }
-                    if (done.length > 0) {
-                      w.document.write("<h3>Completed</h3>");
-                      done.forEach(t => { w.document.write(`<div class="task"><div class="title" style="text-decoration:line-through;color:#888">${t.title}</div></div>`); });
+                    if(done.length>0){
+                      w.document.write("<h3>Completed Tasks</h3>");
+                      done.forEach(t=>{
+                        w.document.write(`<div class="task"><div class="title" style="text-decoration:line-through;color:#888">${t.title}</div><div class="meta">${t.category}${t.linked_unit?" · Unit "+t.linked_unit:""}</div></div>`);
+                      });
                     }
-                    w.document.write("</body></html>"); w.document.close(); setTimeout(() => w.print(), 500);
-                  }}>🖨️ Print</button>
-                  <button className="modal-close" onClick={() => setWorkerView(null)}>✕</button>
+                    w.document.write("</body></html>");
+                    w.document.close();
+                    setTimeout(()=>w.print(),500);
+                  }}>🖨️ Print PDF</button>
+                  <button className="mc" onClick={()=>setWorkerView(null)}>✕</button>
                 </div>
               </div>
-              <div style={{ overflowY: "auto", flex: 1, padding: "16px 22px" }}>
-                <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 20 }}>
-                  <div className="kpi-card"><div className="kpi-label">Open</div><div className="kpi-value">{open.length}</div></div>
-                  <div className="kpi-card"><div className="kpi-label">Done</div><div className="kpi-value">{done.length}</div></div>
-                  <div className="kpi-card"><div className="kpi-label">Overdue</div><div className="kpi-value" style={{ color: workerTasks.filter(t => t.due_date && new Date(t.due_date) < tod && t.status !== "Done").length > 0 ? "var(--danger)" : "" }}>{workerTasks.filter(t => t.due_date && new Date(t.due_date) < tod && t.status !== "Done").length}</div></div>
-                </div>
-                {open.map(t => (
-                  <div key={t.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</span>
-                      <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: PRIORITY_BG[t.priority], color: PRIORITY_COLOR[t.priority], fontWeight: 600 }}>{t.priority}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--sub)" }}>
-                      {t.due_date && <span style={{ marginRight: 10 }}>📅 {new Date(t.due_date).toLocaleDateString("en-GB")}</span>}
-                      {t.linked_unit && <span style={{ marginRight: 10 }}>📦 {t.linked_unit}</span>}
-                      {t.notes && <span>💬 {t.notes}</span>}
+              <div id="worker-print-area" style={{overflowY:"auto",flex:1,padding:"16px 22px"}}>
+                {/* Summary */}
+                <div style={{display:"flex",gap:16,marginBottom:20}}>
+                  <div className="kc" style={{flex:1,padding:"10px 14px"}}>
+                    <div className="kl">Open</div>
+                    <div className="kv" style={{fontSize:22}}>{open.length}</div>
+                  </div>
+                  <div className="kc" style={{flex:1,padding:"10px 14px"}}>
+                    <div className="kl">Completed</div>
+                    <div className="kv" style={{fontSize:22}}>{done.length}</div>
+                  </div>
+                  <div className="kc" style={{flex:1,padding:"10px 14px"}}>
+                    <div className="kl">Overdue</div>
+                    <div className="kv" style={{fontSize:22,color:workerTasks.filter(t=>t.due_date&&new Date(t.due_date)<today&&t.status!=="Done").length>0?"var(--danger)":""}}>
+                      {workerTasks.filter(t=>t.due_date&&new Date(t.due_date)<today&&t.status!=="Done").length}
                     </div>
                   </div>
-                ))}
-                {workerTasks.length === 0 && <div style={{ textAlign: "center", color: "var(--sub)", padding: "32px 0" }}>No tasks for {workerView}</div>}
+                </div>
+                {/* Open tasks */}
+                {open.length>0&&(
+                  <>
+                    <div style={{fontWeight:600,fontSize:12,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:8}}>Open Tasks</div>
+                    {open.map(t=>{
+                      const overdue=t.due_date&&new Date(t.due_date)<today;
+                      return(
+                        <div key={t.id} style={{padding:"10px 0",borderBottom:"1px solid #F0F4FA"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                            <span style={{fontSize:13,fontWeight:600}}>{t.title}</span>
+                            <span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:PRIORITY_BG[t.priority],color:PRIORITY_COLOR[t.priority],fontWeight:600}}>{t.priority}</span>
+                            <span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:"#F0F4FA",color:"var(--sub)"}}>{t.category}</span>
+                            {t.recurrence&&t.recurrence!=="None"&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:99,background:"#EEF4FF",color:"#3B5FA0"}}>🔁 {t.recurrence}</span>}
+                          </div>
+                          <div style={{fontSize:11,color:"var(--sub)",display:"flex",gap:10,flexWrap:"wrap"}}>
+                            {t.due_date&&<span style={{color:overdue?"var(--danger)":"var(--sub)",fontWeight:overdue?600:400}}>📅 {overdue?"Overdue: ":""}{new Date(t.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</span>}
+                            {t.linked_unit&&<span>📦 Unit {t.linked_unit}</span>}
+                            {t.notes&&<span>💬 {t.notes}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+                {/* Done tasks */}
+                {done.length>0&&(
+                  <>
+                    <div style={{fontWeight:600,fontSize:12,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:8,marginTop:20}}>Completed</div>
+                    {done.map(t=>(
+                      <div key={t.id} style={{padding:"8px 0",borderBottom:"1px solid #F0F4FA",opacity:0.6}}>
+                        <div style={{fontSize:13,textDecoration:"line-through",color:"var(--sub)"}}>{t.title}</div>
+                        <div style={{fontSize:11,color:"var(--sub)"}}>{t.category}{t.linked_unit?` · Unit ${t.linked_unit}`:""}</div>
+                      </div>
+                    ))}
+                  </>
+                )}
+                {workerTasks.length===0&&(
+                  <div style={{textAlign:"center",color:"var(--sub)",padding:"32px 0"}}>No tasks assigned to {workerView}</div>
+                )}
               </div>
             </div>
           </div>
         );
       })()}
 
-      {/* Add/Edit Modal */}
-      {showForm && (
-        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
-          <div className="modal" style={{ maxWidth: 520 }}>
-            <div className="modal-header">
-              <div className="modal-title">{editTask ? "Edit Task" : "Add Task"}</div>
-              <button className="modal-close" onClick={() => setShowForm(false)}>✕</button>
+      {/* Done with note modal */}
+      {doneModal&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setDoneModal(null)}>
+          <div className="modal" style={{maxWidth:440}}>
+            <div className="mh">
+              <div className="mt">✓ Mark as Done — {doneModal.title}</div>
+              <button className="mc" onClick={()=>setDoneModal(null)}>✕</button>
             </div>
-            <div className="modal-body">
-              <div className="form-grid">
-                <div className="form-grid-item full">
-                  <label>Task Title *</label>
-                  <input autoFocus value={form.title} onChange={uf("title")} placeholder="e.g. Check fire alarms, Mow grass…" />
+            <div style={{padding:"18px 22px"}}>
+              <div className="fgi full" style={{marginBottom:14}}>
+                <label>Completion note (optional)</label>
+                <textarea autoFocus value={doneNote} onChange={e=>setDoneNote(e.target.value)} rows={3}
+                  placeholder="e.g. Mowed top field, bottom field needs attention next time…"
+                  onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey){handleMarkDoneWithNote(doneModal,doneNote);}}}
+                />
+              </div>
+              {doneModal.recurrence&&doneModal.recurrence!=="None"&&(
+                <div style={{fontSize:12,color:"#3B5FA0",background:"#EEF4FF",padding:"8px 12px",borderRadius:7,marginBottom:14}}>
+                  🔁 Next {doneModal.recurrence.toLowerCase()} task will be created automatically
                 </div>
-                <div className="form-grid-item">
-                  <label>Category</label>
-                  <select value={form.category} onChange={uf("category")}>{TASK_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+              )}
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button className="btn btn-outline" onClick={()=>handleMarkDoneWithNote(doneModal,"")}>Done (no note)</button>
+                <button className="btn btn-success" onClick={()=>handleMarkDoneWithNote(doneModal,doneNote)}>✓ Done</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task detail / comments modal */}
+      {viewTask&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setViewTask(null)}>
+          <div className="modal" style={{maxWidth:540,maxHeight:"85vh",display:"flex",flexDirection:"column"}}>
+            <div className="mh" style={{flexShrink:0}}>
+              <div>
+                <div className="mt">{viewTask.title}</div>
+                <div style={{fontSize:11,color:"var(--sub)",marginTop:2}}>
+                  {viewTask.category} · {viewTask.priority}
+                  {viewTask.assigned_to&&` · 👤 ${viewTask.assigned_to}`}
+                  {viewTask.linked_unit&&` · 📦 Unit ${viewTask.linked_unit}`}
+                  {viewTask.due_date&&` · 📅 ${new Date(viewTask.due_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}`}
+                  {viewTask.recurrence&&viewTask.recurrence!=="None"&&` · 🔁 ${viewTask.recurrence}`}
                 </div>
-                <div className="form-grid-item">
-                  <label>Priority</label>
-                  <select value={form.priority} onChange={uf("priority")}>{TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}</select>
+              </div>
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <button className="btn btn-outline btn-sm" onClick={()=>{openEdit(viewTask);setViewTask(null);}}>Edit</button>
+                <button className="mc" onClick={()=>setViewTask(null)}>✕</button>
+              </div>
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"16px 22px"}}>
+              {/* Task notes */}
+              {viewTask.notes&&(
+                <div style={{background:"#F8FAFC",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"var(--text)"}}>
+                  {viewTask.notes}
                 </div>
-                <div className="form-grid-item">
-                  <label>Due Date</label>
-                  <input type="date" value={form.due_date || ""} onChange={uf("due_date")} />
-                </div>
-                <div className="form-grid-item">
-                  <label>Assigned To</label>
-                  <input value={form.assigned_to || ""} onChange={uf("assigned_to")} placeholder="Name or leave blank" />
-                </div>
-                <div className="form-grid-item">
-                  <label>Recurrence</label>
-                  <select value={form.recurrence || "None"} onChange={uf("recurrence")}>{TASK_RECURRENCE.map(r => <option key={r}>{r}</option>)}</select>
-                </div>
-                <div className="form-grid-item">
-                  <label>Remind me (days before)</label>
-                  <select value={form.reminder_days ?? 7} onChange={e => setForm(f => ({ ...f, reminder_days: Number(e.target.value) }))}>
-                    <option value={0}>On the day</option>
-                    {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{d} day{d !== 1 ? "s" : ""} before</option>)}
-                  </select>
-                </div>
-                <div className="form-grid-item">
-                  <label>Linked Unit (optional)</label>
-                  <input value={form.linked_unit || ""} onChange={uf("linked_unit")} placeholder="Type unit ID…" list="task-unit-list" />
-                  <datalist id="task-unit-list">
-                    {unitOptions.map(d => <option key={d.id} value={d.id}>{d.label || d.id}{d.tenant ? ` · ${d.tenant}` : ""}</option>)}
-                  </datalist>
-                </div>
-                <div className="form-grid-item">
-                  <label>Status</label>
-                  <select value={form.status || "Open"} onChange={uf("status")}>{TASK_STATUSES.map(s => <option key={s}>{s}</option>)}</select>
-                </div>
-                <div className="form-grid-item full">
-                  <label>Notes</label>
-                  <textarea value={form.notes || ""} onChange={uf("notes")} rows={3} placeholder="Any additional details…" />
+              )}
+              {/* Photo upload */}
+              <div style={{marginBottom:16}}>
+                <label style={{fontSize:12,fontWeight:600,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:8}}>Photos</label>
+                <label style={{cursor:"pointer"}}>
+                  <input type="file" accept="image/*" style={{display:"none"}} onChange={async e=>{
+                    const file=e.target.files[0];
+                    if(!file) return;
+                    showToast("⏳ Uploading photo…");
+                    const path=await uploadTaskPhoto(viewTask.id,file,token);
+                    if(path){
+                      const comment=`📷 Photo attached: ${file.name}`;
+                      const saved=await taskCommentSave({task_id:viewTask.id,comment,created_at:new Date().toISOString()},token);
+                      const rec=Array.isArray(saved)?saved[0]:saved;
+                      if(rec?.id) setTaskComments(c=>[...c,rec]);
+                      showToast("✅ Photo uploaded");
+                    } else {
+                      showToast("❌ Photo upload failed");
+                    }
+                    e.target.value="";
+                  }}/>
+                  <span className="btn btn-outline btn-sm">📷 Attach photo</span>
+                </label>
+              </div>
+              {/* Comments / updates log */}
+              <div>
+                <label style={{fontSize:12,fontWeight:600,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:8}}>Updates & Notes</label>
+                {taskComments.length===0&&<div style={{fontSize:12,color:"var(--sub)",marginBottom:12}}>No updates yet</div>}
+                {taskComments.map((c,i)=>(
+                  <div key={i} style={{padding:"8px 0",borderBottom:"1px solid #F0F4FA"}}>
+                    <div style={{fontSize:13,color:"var(--text)"}}>{c.comment}</div>
+                    <div style={{fontSize:10,color:"var(--sub)",marginTop:2}}>{new Date(c.created_at).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})} · {new Date(c.created_at).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:8,marginTop:12}}>
+                  <input value={commentText} onChange={e=>setCommentText(e.target.value)}
+                    placeholder="Add an update or note…"
+                    style={{flex:1,fontFamily:"var(--fb)",fontSize:13,padding:"7px 11px",border:"1.5px solid #D0DAE8",borderRadius:7,outline:"none"}}
+                    onKeyDown={e=>{if(e.key==="Enter")addComment();}}
+                  />
+                  <button className="btn btn-primary btn-sm" onClick={addComment} disabled={addingComment||!commentText.trim()}>Add</button>
                 </div>
               </div>
             </div>
-            <div className="modal-footer">
-              {editTask && <button className="modal-btn modal-btn-danger" onClick={() => { handleDelete(editTask.id); setShowForm(false); }}>Delete</button>}
-              <button className="modal-btn modal-btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
-              <button className="modal-btn modal-btn-primary" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : editTask ? "Save Changes" : "Add Task"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Modal */}
+      {showForm&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
+          <div className="modal" style={{maxWidth:520}}>
+            <div className="mh">
+              <div className="mt">{editTask?"Edit Task":"Add Task"}</div>
+              <button className="mc" onClick={()=>setShowForm(false)}>✕</button>
+            </div>
+            <div style={{padding:"18px 22px",display:"flex",flexDirection:"column",gap:12}}>
+              <div className="fgi full">
+                <label>Task Title *</label>
+                <input autoFocus value={form.title} onChange={u("title")} placeholder="e.g. Mow grass, Check fire alarms…"/>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div className="fgi">
+                  <label>Category</label>
+                  <select value={form.category} onChange={u("category")}>
+                    {TASK_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="fgi">
+                  <label>Priority</label>
+                  <select value={form.priority} onChange={u("priority")}>
+                    {TASK_PRIORITIES.map(p=><option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div className="fgi">
+                  <label>Due Date</label>
+                  <input type="date" value={form.due_date||""} onChange={u("due_date")}/>
+                </div>
+                <div className="fgi">
+                  <label>Assigned To</label>
+                  <input value={form.assigned_to||""} onChange={u("assigned_to")} placeholder="Name or leave blank"/>
+                </div>
+                <div className="fgi">
+                  <label>Recurrence</label>
+                  <select value={form.recurrence||"None"} onChange={u("recurrence")}>
+                    {TASK_RECURRENCE.map(r=><option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div className="fgi">
+                  <label>Remind me (days before)</label>
+                  <select value={form.reminder_days??7} onChange={e=>setForm(f=>({...f,reminder_days:Number(e.target.value)}))}>
+                    <option value={0}>On the day</option>
+                    {[1,3,7,14,30].map(d=><option key={d} value={d}>{d} day{d!==1?"s":""} before</option>)}
+                  </select>
+                </div>
+                <div className="fgi" style={{position:"relative"}}>
+                  <label>Linked Unit (optional)</label>
+                  <input
+                    value={form.linked_unit||""}
+                    onChange={u("linked_unit")}
+                    placeholder="Type unit ID or tenant name…"
+                    list="unit-options-list"
+                  />
+                  <datalist id="unit-options-list">
+                    {unitOptions.map(d=>(
+                      <option key={d.id} value={d.id}>{d.label||d.id}{d.tenant?` · ${d.tenant}`:""}</option>
+                    ))}
+                  </datalist>
+                  {form.linked_unit&&(
+                    <span style={{position:"absolute",right:8,top:30,fontSize:11,color:"var(--sub)"}}>
+                      {unitOptions.find(d=>d.id===form.linked_unit)?.tenant||""}
+                    </span>
+                  )}
+                </div>
+                <div className="fgi">
+                  <label>Status</label>
+                  <select value={form.status||"Open"} onChange={u("status")}>
+                    {TASK_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="fgi full">
+                <label>Notes</label>
+                <textarea value={form.notes||""} onChange={u("notes")} rows={3} placeholder="Any additional details…"/>
+              </div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
+                <button className="btn btn-outline" onClick={()=>setShowForm(false)}>Cancel</button>
+                <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving?"Saving…":editTask?"Save Changes":"Add Task"}</button>
+              </div>
             </div>
           </div>
         </div>
@@ -4770,108 +2889,163 @@ function TasksPage({ orgId, token, toast, data = [] }) {
 }
 
 // ─── Calendar Page ────────────────────────────────────────────────────────────
-function CalendarPage({ data, enquiries = [], tasks = [] }) {
+function CalendarPage({data, enquiries=[], tasks=[]}){
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
-  const [viewMonth, setViewMonth] = useState(now.getMonth());
+  const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-indexed
   const [selectedDay, setSelectedDay] = useState(null);
 
-  function prevMonth() { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); }
-  function nextMonth() { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); }
+  function prevMonth(){
+    if(viewMonth===0){setViewMonth(11);setViewYear(y=>y-1);}
+    else setViewMonth(m=>m-1);
+  }
+  function nextMonth(){
+    if(viewMonth===11){setViewMonth(0);setViewYear(y=>y+1);}
+    else setViewMonth(m=>m+1);
+  }
 
-  const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleString("en-GB", { month: "long", year: "numeric" });
+  const monthLabel = new Date(viewYear,viewMonth,1).toLocaleString("en-GB",{month:"long",year:"numeric"});
+
+  // Build events map: key = "YYYY-MM-DD", value = [{type, label, color, unit}]
   const events = {};
-  function addEvent(dateStr, event) {
-    if (!dateStr) return;
-    const d = dateStr.slice(0, 10);
-    if (!d || d.length < 10) return;
-    if (!events[d]) events[d] = [];
+  function addEvent(dateStr, event){
+    if(!dateStr) return;
+    const d = dateStr.slice(0,10);
+    if(!d || d.length < 10) return;
+    if(!events[d]) events[d]=[];
     events[d].push(event);
   }
 
-  data.forEach(u => {
-    if (!u.id) return;
-    const name = u.tenant || u.label || u.id;
-    if (u.move_in_date) addEvent(u.move_in_date, { type: "move_in", label: `Move-in: ${name}`, color: "#1A7F5A", unit: u.id });
-    if (u.move_out_date) addEvent(u.move_out_date, { type: "move_out", label: `Move-out: ${name}`, color: "#C0392B", unit: u.id });
-    if (u.review && u.category !== "Storage") {
-      const d = u.review.length === 10 ? u.review : null;
-      if (d) addEvent(d, { type: "review", label: `Review: ${name}`, color: "#C9A84C", unit: u.id });
+  data.forEach(u=>{
+    if(!u.id) return;
+    const name = u.tenant||u.label||u.id;
+    // Move-in dates
+    if(u.move_in_date) addEvent(u.move_in_date,{type:"move_in",label:`Move-in: ${name}`,color:"#1A7F5A",unit:u.id});
+    // Move-out dates
+    if(u.move_out_date) addEvent(u.move_out_date,{type:"move_out",label:`Move-out: ${name}`,color:"#C0392B",unit:u.id});
+    // Lease review dates (Residential/Commercial only)
+    if(u.review && u.category!=="Storage"){
+      const d = u.review.length===10 ? u.review : null;
+      if(d) addEvent(d,{type:"review",label:`Review: ${name}`,color:"#C9A84C",unit:u.id});
     }
   });
 
-  enquiries.forEach(e => {
-    if (e.follow_up_date && e.status !== "archived" && e.status !== "converted") {
-      addEvent(e.follow_up_date, { type: "followup", label: `Follow-up: ${e.name}`, color: "#7B3FA0", unit: null });
+  // CRM follow-up dates
+  enquiries.forEach(e=>{
+    if(e.follow_up_date && e.status!=="archived" && e.status!=="converted"){
+      addEvent(e.follow_up_date,{type:"followup",label:`Follow-up: ${e.name}`,color:"#7B3FA0",unit:null});
     }
   });
 
-  tasks.forEach(t => {
-    if (t.due_date && t.status !== "Done") {
-      const col = t.priority === "Urgent" ? "#C0392B" : t.priority === "High" ? "#E67E22" : "#E8901A";
-      addEvent(t.due_date, { type: "task", label: `🔧 ${t.title}`, color: col, unit: t.linked_unit || null });
+  // Tasks due dates
+  tasks.forEach(t=>{
+    if(t.due_date && t.status!=="Done"){
+      const col=t.priority==="Urgent"?"#C0392B":t.priority==="High"?"#E67E22":"#E8901A";
+      addEvent(t.due_date,{type:"task",label:`🔧 ${t.title}`,color:col,unit:t.linked_unit||null});
     }
   });
 
-  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
-  const startOffset = (firstDay + 6) % 7;
-  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const todayStr = now.toISOString().slice(0, 10);
+  // Calendar grid
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay(); // 0=Sun
+  const startOffset = (firstDay+6)%7; // Monday-first offset
+  const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate();
+  const todayStr = now.toISOString().slice(0,10);
+
   const cells = [];
-  for (let i = 0; i < startOffset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+  for(let i=0;i<startOffset;i++) cells.push(null);
+  for(let d=1;d<=daysInMonth;d++) cells.push(d);
+  // Pad to complete last row
+  while(cells.length%7!==0) cells.push(null);
 
-  function dateStr(day) {
-    if (!day) return null;
-    return `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const dayKeys = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+  function dateStr(day){
+    if(!day) return null;
+    return `${viewYear}-${String(viewMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
   }
 
-  const selectedEvents = selectedDay ? (events[dateStr(selectedDay)] || []) : [];
+  const selectedEvents = selectedDay ? (events[dateStr(selectedDay)]||[]) : [];
 
-  return (
-    <div className="page">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="sp-btn" onClick={prevMonth}>← Prev</button>
-          <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", minWidth: 200, textAlign: "center" }}>{monthLabel}</div>
-          <button className="sp-btn" onClick={nextMonth}>Next →</button>
+  // Event type legend
+  const legend = [
+    {color:"#1A7F5A",label:"Move-in"},
+    {color:"#C0392B",label:"Move-out"},
+    {color:"#C9A84C",label:"Lease review"},
+    {color:"#7B3FA0",label:"CRM follow-up"},
+    {color:"#E8901A",label:"Task due"},
+  ];
+
+  return(
+    <div>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <button className="btn btn-outline btn-sm" onClick={prevMonth}>← Prev</button>
+          <div style={{fontFamily:"var(--fh)",fontSize:20,fontWeight:700,color:"var(--navy)",minWidth:200,textAlign:"center"}}>{monthLabel}</div>
+          <button className="btn btn-outline btn-sm" onClick={nextMonth}>Next →</button>
         </div>
-        <button className="sp-btn" onClick={() => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()); setSelectedDay(null); }}>Today</button>
+        <button className="btn btn-outline btn-sm" onClick={()=>{setViewYear(now.getFullYear());setViewMonth(now.getMonth());setSelectedDay(null);}}>Today</button>
       </div>
 
       {/* Legend */}
-      <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["#1A7F5A", "Move-in"], ["#C0392B", "Move-out"], ["#C9A84C", "Lease review"], ["#7B3FA0", "CRM follow-up"], ["#E8901A", "Task due"]].map(([c, l]) => (
-          <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--sub)" }}>
-            <div style={{ width: 10, height: 10, borderRadius: 2, background: c, flexShrink: 0 }} />{l}
+      <div style={{display:"flex",gap:16,marginBottom:16,flexWrap:"wrap"}}>
+        {legend.map(l=>(
+          <div key={l.label} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--sub)"}}>
+            <div style={{width:10,height:10,borderRadius:2,background:l.color,flexShrink:0}}/>
+            {l.label}
           </div>
         ))}
       </div>
 
       {/* Calendar grid */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", borderBottom: "1px solid var(--border)" }}>
-          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => (
-            <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, fontWeight: 600, color: "var(--sub)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d}</div>
+      <div className="card" style={{overflow:"hidden"}}>
+        {/* Day headers */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",borderBottom:"1px solid #E4EAF2"}}>
+          {dayKeys.map(d=>(
+            <div key={d} style={{padding:"8px 0",textAlign:"center",fontSize:11,fontWeight:600,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+              {d}
+            </div>
           ))}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
-          {cells.map((day, i) => {
+        {/* Day cells */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)"}}>
+          {cells.map((day,i)=>{
             const ds = dateStr(day);
-            const dayEvents = ds ? (events[ds] || []) : [];
-            const isToday = ds === todayStr;
-            const isSelected = day === selectedDay;
-            return (
-              <div key={i} onClick={() => day && setSelectedDay(day === selectedDay ? null : day)}
-                style={{ minHeight: 80, padding: "6px 8px", borderRight: i % 7 !== 6 ? "1px solid var(--border)" : "none", borderBottom: "1px solid var(--border)", background: isSelected ? "#EEF4FF" : isToday ? "#F8FAFF" : "", cursor: day ? "pointer" : "default", opacity: day ? 1 : 0.3 }}>
-                {day && (
+            const dayEvents = ds ? (events[ds]||[]) : [];
+            const isToday = ds===todayStr;
+            const isSelected = day===selectedDay;
+            return(
+              <div key={i} onClick={()=>day&&setSelectedDay(day===selectedDay?null:day)}
+                style={{
+                  minHeight:80,padding:"6px 8px",
+                  borderRight:i%7!==6?"1px solid #E4EAF2":"none",
+                  borderBottom:"1px solid #E4EAF2",
+                  background:isSelected?"#EEF4FF":isToday?"#F8FAFF":"",
+                  cursor:day?"pointer":"default",
+                  opacity:day?1:0.3,
+                }}>
+                {day&&(
                   <>
-                    <div style={{ fontSize: 12, fontWeight: isToday ? 700 : 500, marginBottom: 4, ...(isToday ? { background: "var(--navy)", color: "#fff", width: 22, height: 22, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center" } : { color: "var(--text)" }) }}>{day}</div>
-                    {dayEvents.slice(0, 3).map((e, j) => (
-                      <div key={j} style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, marginBottom: 2, background: e.color + "22", color: e.color, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.label}>{e.label}</div>
+                    <div style={{
+                      fontSize:12,fontWeight:isToday?700:500,
+                      color:isToday?"var(--navy)":"var(--text)",
+                      marginBottom:4,
+                      ...(isToday?{
+                        background:"var(--navy)",color:"#fff",
+                        width:22,height:22,borderRadius:"50%",
+                        display:"flex",alignItems:"center",justifyContent:"center",
+                      }:{})
+                    }}>{day}</div>
+                    {dayEvents.slice(0,3).map((e,j)=>(
+                      <div key={j} style={{
+                        fontSize:10,padding:"1px 5px",borderRadius:3,marginBottom:2,
+                        background:e.color+"22",color:e.color,fontWeight:500,
+                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"
+                      }} title={e.label}>{e.label}</div>
                     ))}
-                    {dayEvents.length > 3 && <div style={{ fontSize: 10, color: "var(--sub)", paddingLeft: 5 }}>+{dayEvents.length - 3} more</div>}
+                    {dayEvents.length>3&&(
+                      <div style={{fontSize:10,color:"var(--sub)",paddingLeft:5}}>+{dayEvents.length-3} more</div>
+                    )}
                   </>
                 )}
               </div>
@@ -4881,168 +3055,1644 @@ function CalendarPage({ data, enquiries = [], tasks = [] }) {
       </div>
 
       {/* Day detail panel */}
-      {selectedDay && (
-        <div className="card" style={{ marginTop: 16, padding: 0, overflow: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
-            <div style={{ fontFamily: "var(--fh)", fontWeight: 600, fontSize: 14 }}>
-              {new Date(viewYear, viewMonth, selectedDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+      {selectedDay&&(
+        <div className="card" style={{marginTop:16}}>
+          <div className="ch">
+            <div className="ct">
+              {new Date(viewYear,viewMonth,selectedDay).toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
             </div>
-            <button className="sp-btn" onClick={() => setSelectedDay(null)}>✕</button>
+            <button className="btn btn-outline btn-sm" onClick={()=>setSelectedDay(null)}>✕</button>
           </div>
-          {selectedEvents.length === 0
-            ? <div style={{ padding: "20px", textAlign: "center", color: "var(--sub)", fontSize: 13 }}>No events on this day</div>
-            : selectedEvents.map((e, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid var(--border)" }}>
-                <div style={{ width: 4, height: 36, borderRadius: 2, background: e.color, flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{e.label}</div>
-                  <div style={{ fontSize: 11, color: "var(--sub)", marginTop: 2 }}>
-                    {e.type === "move_in" && "Tenant move-in"}
-                    {e.type === "move_out" && "Tenant move-out"}
-                    {e.type === "review" && "Lease review due"}
-                    {e.type === "followup" && "CRM follow-up reminder"}
-                    {e.type === "task" && "Task due"}
-                    {e.unit && ` · Unit ${e.unit}`}
+          {selectedEvents.length===0?(
+            <div style={{padding:"20px",textAlign:"center",color:"var(--sub)",fontSize:13}}>No events on this day</div>
+          ):(
+            <div style={{padding:"0 0 8px"}}>
+              {selectedEvents.map((e,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 18px",borderBottom:"1px solid #F0F4FA"}}>
+                  <div style={{width:4,height:36,borderRadius:2,background:e.color,flexShrink:0}}/>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>{e.label}</div>
+                    <div style={{fontSize:11,color:"var(--sub)",marginTop:2}}>
+                      {e.type==="move_in"&&"Tenant move-in"}
+                      {e.type==="move_out"&&"Tenant move-out"}
+                      {e.type==="review"&&"Lease review due"}
+                      {e.type==="followup"&&"CRM follow-up reminder"}
+                      {e.type==="task"&&"Task due"}
+                      {e.unit&&` · Unit ${e.unit}`}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
-          }
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// ─── Data Tools Page ──────────────────────────────────────────────────────────
-function DataToolsPage({ data, orgId, token, toast }) {
-  function exportData() {
-    const rows = data.map(d => ({
-      "Unit ID": d.id, "Property/Label": d.label || "",
-      "Category": d.category, "Tenant": d.tenant || "",
-      "Address": d.address || "", "Email": d.email || "",
-      "Phone": d.phone || "", "Payment Method": d.payment || "",
-      "Rent Ex-VAT": d.rent || "", "Rent Inc-VAT": d.vat_rent || "",
-      "Status": SL[d.status] || d.status,
-      "Lock Deposit Paid": d.lock_deposit_paid || "",
-      "Lock Deposit Amount": d.lock_deposit_amount || "",
-      "Tenant Deposit": d.tenant_deposit || "",
-      "Key Number": d.key_number || "",
-      "Row/Location": d.row_name || "", "Box Number": d.box_no || "",
-      "Size": d.size || "", "Review Date": d.review || "",
-      "Move-in Date": d.move_in_date || "", "Notes": d.notes || "",
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Tenants");
-    XLSX.writeFile(wb, `Cerect_Export_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast("Export complete", "success");
+// ─── Import / Export ──────────────────────────────────────────────────────────
+function DataTools({data,onImport,token,showToast}){
+
+  // ── Export matching original spreadsheet format exactly ───────────────────
+  function exportOriginal(){
+    const wb=XLSX.utils.book_new();
+    const rows=[];
+    // Row 1 - header info
+    rows.push([new Date().toLocaleDateString("en-GB"),null,null,null,null,null,null,null,"Invoicing",null,null,"FOB ",null,null,"Invoice ","Gate",null,null,"Price Update Email Sent","Invoice & DD"]);
+    // Row 2 - blank
+    rows.push([null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]);
+    // Row 3 - column headers
+    rows.push([null,"Status",null,"Box No."," Size","Start Date","Tenant","SO/DD","Yes/No","Lock Deposit","Key No.","Deposit","£ per Week","£ per Month","Inc.Vat"," Code",null,null,null,null,"Email 1","Contact Number/Alternative Contact","Next Review"]);
+
+    const statusToOrig={occupied:"Occupied",arrears:"In arrears",leaving:"Leaving",new:"New Customer",pending:"Pending",available:"Available"};
+
+    function addSection(name, items){
+      rows.push([name,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]);
+      items.forEach(d=>{
+        const rent=d.rent||null;
+        const weeklyRent=rent?(rent*12)/52:null;
+        rows.push([
+          d.label||d.id,
+          statusToOrig[d.status]||d.status,
+          d.section||null,
+          d.box_no||null,
+          d.size||null,
+          d.review||null,
+          d.tenant||null,
+          d.payment||null,
+          null,null,null,null,
+          weeklyRent?Math.round(weeklyRent*100)/100:null,
+          rent,
+          d.vat_rent||null,
+          null,null,
+          d.tenant||null,
+          null,null,
+          d.email||null,
+          d.phone||null,
+          d.review||null,
+        ]);
+      });
+    }
+
+    // Residential
+    addSection("Residential", data.filter(d=>d.category==="Residential"));
+    // Commercial
+    addSection("Commercial", data.filter(d=>d.category==="Commercial"));
+    // Storage rows in order
+    const storRows=[...new Set(data.filter(d=>d.category==="Storage").map(d=>d.row_name).filter(Boolean))];
+    storRows.forEach(r=>addSection(r, data.filter(d=>d.category==="Storage"&&d.row_name===r)));
+    // Cow Shed
+    // Cow Shed is now a regular Storage area — exported with other rows above
+
+    // Legend rows at bottom
+    rows.push([null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]);
+    rows.push([null,"In arrears",null,null,null,null,null,null,null,null,"Total ",null,null,null,null,null,null,null,null,null,null,null,null]);
+    rows.push([null,"Leaving"]);
+    rows.push([null,"New Customer"]);
+    rows.push([null,"Pending"]);
+    rows.push([null,"Available"]);
+
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"]=[{wch:10},{wch:14},{wch:8},{wch:10},{wch:10},{wch:18},{wch:32},{wch:12},{wch:8},{wch:12},{wch:8},{wch:8},{wch:12},{wch:12},{wch:10},{wch:8},{wch:8},{wch:32},{wch:6},{wch:10},{wch:32},{wch:22},{wch:18}];
+    XLSX.utils.book_append_sheet(wb,ws,"Tenant Schedule");
+    XLSX.writeFile(wb,`Storage_Schedule_${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
-  async function fullBackup() {
-    if (!token) { toast("Not logged in", "error"); return; }
-    if (!window.confirm("This will create a zip file containing all tenant data and documents.\n\nThis may take a minute depending on how many documents you have.\n\nStart backup?")) return;
-    toast("⏳ Preparing backup — please wait…", "info");
-    try {
-      if (!window.JSZip) {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
-          s.onload = resolve; s.onerror = reject;
+  async function fullBackup(){
+    if(!token){showToast("❌ Not logged in");return;}
+    if(!window.confirm("This will create a single zip file containing all tenant data and documents.\n\nThis may take a minute depending on how many documents you have.\n\nStart backup?")) return;
+    showToast("⏳ Preparing backup — please wait…");
+    try{
+      // Load JSZip via script tag if not already loaded
+      if(!window.JSZip){
+        await new Promise((resolve,reject)=>{
+          const s=document.createElement("script");
+          s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+          s.onload=resolve;
+          s.onerror=reject;
           document.head.appendChild(s);
         });
       }
-      const zip = new window.JSZip();
+      const zip=new window.JSZip();
 
-      // Excel data
-      const rows = data.map(d => ({
-        "Unit ID": d.id, "Label": d.label || "", "Category": d.category,
-        "Tenant": d.tenant || "", "Email": d.email || "", "Phone": d.phone || "",
-        "Rent": d.rent || "", "Status": SL[d.status] || d.status,
-      }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Cerect");
-      const excelBlob = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      zip.file("Cerect_Data.xlsx", excelBlob);
+      // Step 1 — add Excel data file
+      const rows=data.map(d=>({"Unit ID":d.id,"Property/Label":d.label||"","Category":d.category,"Tenant":d.tenant||"","Address":d.address||"","Email":d.email||"","Phone":d.phone||"","Payment Method":d.payment||"","Rent Ex-VAT":d.rent||"","Rent Inc-VAT":d.vat_rent||"","Status":SL[d.status]||d.status,"Lock Deposit Paid":d.lock_deposit_paid||"","Lock Deposit Amount":d.lock_deposit_amount||"","Tenant Deposit":d.tenant_deposit||"","Key Number":d.key_number||"","Row/Location":d.row_name||"","Box Number":d.box_no||"","Size":d.size||"","Review Date":d.review||"","Move-in Date":d.move_in_date||"","Notes":d.notes||""}));
+      const ws=XLSX.utils.json_to_sheet(rows);
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,"CamStorage");
 
-      // Documents
-      const listR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-        method: "POST",
-        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prefix: "", limit: 500, delimiter: "/" }),
+      // Add Enquiries sheet
+      const crmR=await fetch(`${SUPABASE_URL}/rest/v1/enquiries?order=enquiry_date.desc`,{headers:authH(token)});
+      const crmData=await crmR.json();
+      if(Array.isArray(crmData)&&crmData.length>0){
+        const crmRows=crmData.map(e=>({"Name":e.name||"","Email":e.email||"","Phone":e.phone||"","Category":e.category||"","Size Needed":e.size_needed||"","Status":e.status||"","Enquiry Date":e.enquiry_date||"","Notes":e.notes||""}));
+        const crmWs=XLSX.utils.json_to_sheet(crmRows);
+        XLSX.utils.book_append_sheet(wb,crmWs,"CRM Enquiries");
+      }
+
+      const excelBlob=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+      zip.file("CamStorage_Data.xlsx", excelBlob);
+
+      // Step 2 — get all document folders
+      const listR=await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`,{
+        method:"POST",
+        headers:{...BASE_H,Authorization:`Bearer ${token}`},
+        body:JSON.stringify({prefix:"",limit:500,delimiter:"/"})
       });
-      const folders = await listR.json();
-      let totalFiles = 0;
+      const folders=await listR.json();
 
-      if (Array.isArray(folders)) {
-        for (const folder of folders) {
-          const folderName = (folder.name || "").replace(/\/$/, "");
-          if (!folderName || folderName === "archive") continue;
-          const tenant = data.find(t => {
-            const safe = (t.id || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-            return safe === folderName || t.id === folderName;
+      // Step 3 — fetch each document and add to zip
+      let totalFiles=0;
+      if(Array.isArray(folders)){
+        for(const folder of folders){
+          const folderName=(folder.name||"").replace(/\/$/,"");
+          if(!folderName||folderName==="archive") continue;
+          const tenant=data.find(t=>{
+            const safe=(t.id||"").replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,'_');
+            return safe===folderName||t.id===folderName;
           });
-          const folderLabel = tenant ? (tenant.tenant || tenant.label || folderName) : folderName;
-          const fr = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-            method: "POST",
-            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ prefix: folderName + "/", limit: 100 }),
+          const folderLabel=tenant?(tenant.tenant||tenant.label||folderName):folderName;
+          const fr=await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`,{
+            method:"POST",
+            headers:{...BASE_H,Authorization:`Bearer ${token}`},
+            body:JSON.stringify({prefix:folderName+"/",limit:100})
           });
-          const files = await fr.json();
-          if (!Array.isArray(files)) continue;
-          for (const file of files) {
-            if (!file.id) continue;
-            const filePath = `${folderName}/${file.name}`;
-            const signR = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${filePath}`, {
-              method: "POST",
-              headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ expiresIn: 300 }),
+          const files=await fr.json();
+          if(!Array.isArray(files)) continue;
+          for(const file of files){
+            if(!file.id) continue;
+            const filePath=`${folderName}/${file.name}`;
+            const signR=await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${filePath}`,{
+              method:"POST",
+              headers:{...BASE_H,Authorization:`Bearer ${token}`},
+              body:JSON.stringify({expiresIn:300})
             });
-            const signD = await signR.json();
-            if (!signD.signedURL) continue;
-            const fileR = await fetch(`${SUPABASE_URL}/storage/v1${signD.signedURL}`);
-            if (!fileR.ok) continue;
-            const blob = await fileR.blob();
-            const displayName = file.name.replace(/^\d+_/, "");
-            zip.folder(`Documents/${folderLabel}`).file(displayName, blob);
+            const signD=await signR.json();
+            if(!signD.signedURL) continue;
+            const fileR=await fetch(`${SUPABASE_URL}/storage/v1${signD.signedURL}`);
+            if(!fileR.ok) continue;
+            const blob=await fileR.blob();
+            const displayName=file.name.replace(/^\d+_/,"");
+            zip.folder(`Documents/${folderLabel}`).file(displayName,blob);
             totalFiles++;
-            toast(`⏳ Adding file ${totalFiles}…`, "info");
+            showToast(`⏳ Adding file ${totalFiles}…`);
           }
         }
       }
 
-      toast("⏳ Creating zip file…", "info");
-      const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
-      const date = new Date().toISOString().slice(0, 10);
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(zipBlob);
-      a.download = `Cerect_Backup_${date}.zip`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      // Step 4 — generate and download the zip
+      showToast("⏳ Creating zip file…");
+      const zipBlob=await zip.generateAsync({type:"blob",compression:"DEFLATE",compressionOptions:{level:6}});
+      const date=new Date().toISOString().slice(0,10);
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(zipBlob);
+      a.download=`CamStorage_Backup_${date}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(a.href);
-      toast(`✅ Backup complete — ${totalFiles} document${totalFiles !== 1 ? "s" : ""} + data`, "success");
-    } catch (e) {
-      toast("❌ Backup failed — " + e.message, "error");
+      showToast(`✅ Backup complete — ${totalFiles} document${totalFiles!==1?"s":""} + data`);
+    }catch(e){
+      showToast("❌ Backup failed — "+e.message);
     }
   }
 
-  return (
-    <div className="page">
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+  // ── Import from original spreadsheet format ────────────────────────────────
+  function parseOriginalFormat(ws){
+    const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
+    const records=[];
+    let currentCategory="Storage";
+    let currentRow=null;
+
+    const statusMap={
+      "Occupied":"occupied","occupied":"occupied",
+      "In arrears":"arrears","In Arrears":"arrears","in arrears":"arrears",
+      "Leaving":"leaving","leaving":"leaving",
+      "New Customer":"new","new customer":"new","New customer":"new",
+      "Pending":"pending","pending":"pending",
+      "Available":"available","available":"available",
+    };
+
+    const legendVals=new Set(["in arrears","leaving","new customer","pending","available"]);
+
+    function isSectionHeader(colA, colB, row){
+      if(!colA) return false;
+      if(colA.startsWith("=")) return false;
+      if(colA.toLowerCase()==="status") return false;
+      const hasColD=row[3]!=null&&String(row[3]).trim()!=="";
+      if(hasColD) return false;
+      const hasTenant=row[5]!=null&&String(row[5]).trim()!=="";
+      if(hasTenant) return false;
+      if(colB&&colB.toLowerCase()!=="") return false;
+      return true;
+    }
+
+    for(let i=0;i<raw.length;i++){
+      const row=raw[i];
+      if(!row||row.every(v=>v===null||v===undefined||v==="")) continue;
+
+      const colA=row[0]!=null?String(row[0]).trim():"";
+      const colB=row[1]!=null?String(row[1]).trim():"";
+
+      if(!colA&&!colB) continue;
+      if(colA.startsWith("=")||colB==="Status") continue;
+      if(colA.match(/^\d{2}\/\d{2}\/\d{4}/)) continue;
+      if(!colA&&colB&&legendVals.has(colB.toLowerCase())) continue;
+
+      if(isSectionHeader(colA, colB, row)){
+        const lower=colA.toLowerCase().trim();
+        if(lower.startsWith("residential")){currentCategory="Residential";currentRow=null;}
+        else if(lower.startsWith("commercial")){currentCategory="Commercial";currentRow=null;}
+        else{
+          // All other sections are Storage areas — use the name as-is
+          currentCategory="Storage";
+          currentRow=colA.trim();
+        }
+        continue;
+      }
+
+      if(!colB||!statusMap[colB]) continue;
+      if(!colA) continue;
+
+      const id=String(colA).replace(/\s+/g,"");
+      const status=statusMap[colB]||"occupied";
+      const boxNo=row[2]?String(row[2]).trim():null;
+      const size=row[3]?String(row[3]).trim():null;
+      const startDate=row[4]?String(row[4]).trim():null;
+      const tenant=row[5]?String(row[5]).trim()||null:null;
+      const payment=row[6]?String(row[6]).trim():null;
+      const address=(currentCategory==="Residential"||currentCategory==="Commercial")?boxNo:null;
+      let rent=null;
+      if(row[12]!=null){const v=Number(row[12]);if(!isNaN(v)&&v>0)rent=v;}
+      let vatRent=null;
+      if(row[13]!=null){const v=Number(row[13]);if(!isNaN(v)&&v>0)vatRent=v;}
+      const email=row[19]?String(row[19]).trim():null;
+      const phone=row[20]?String(row[20]).trim():null;
+      const review=row[21]?String(row[21]).trim():null;
+      const lockDepositPaid=row[7]?String(row[7]).trim():null;
+      let lockDepositAmount=null;
+      if(row[8]!=null&&!isNaN(Number(row[8])))lockDepositAmount=Number(row[8]);
+      let tenantDeposit=null;
+      if(row[10]!=null&&!isNaN(Number(row[10])))tenantDeposit=Number(row[10]);
+      const keyNumber=row[9]?String(row[9]).trim():null;
+      const label=(currentCategory==="Residential"||currentCategory==="Commercial")?(colA):null;
+
+      // Skip duplicate IDs
+      if(records.some(r=>r.id===id)) continue;
+
+      records.push({
+        id,label:label||null,tenant:tenant||null,email:email||null,
+        phone:phone||null,payment:payment||null,address:address||null,
+        rent,vat_rent:vatRent,status,category:currentCategory,
+        row_name:currentRow,box_no:boxNo,size,section:null,
+        review:review||startDate||null,notes:null,
+        lock_deposit_paid:lockDepositPaid,lock_deposit_amount:lockDepositAmount,
+        tenant_deposit:tenantDeposit,key_number:keyNumber,
+      });
+    }
+    return records;
+  }
+
+  function parsePlatformFormat(ws){
+    return XLSX.utils.sheet_to_json(ws).map(r=>({
+      id:String(r["Unit ID"]||"").trim(),label:r["Property/Label"]||null,
+      category:r["Category"]||"Storage",tenant:r["Tenant"]||null,
+      address:r["Address"]||null,email:r["Email"]||null,phone:r["Phone"]||null,
+      payment:r["Payment Method"]||null,
+      rent:r["Rent Ex-VAT"]?Number(r["Rent Ex-VAT"]):null,
+      vat_rent:r["Rent Inc-VAT"]?Number(r["Rent Inc-VAT"]):null,
+      status:Object.entries(SL).find(([k,v])=>v===r["Status"])?.[0]||r["Status"]||"occupied",
+      lock_deposit_paid:r["Lock Deposit Paid"]||null,
+      lock_deposit_amount:r["Lock Deposit Amount"]?Number(r["Lock Deposit Amount"]):null,
+      tenant_deposit:r["Tenant Deposit"]?Number(r["Tenant Deposit"]):null,
+      key_number:r["Key Number"]||null,
+      row_name:r["Row/Location"]||null,box_no:r["Box Number"]||null,size:r["Size"]||null,
+      review:r["Review Date"]||null,move_in_date:r["Move-in Date"]||null,notes:r["Notes"]||null,
+    })).filter(r=>r.id);
+  }
+
+  function handleFile(e){
+    const file=e.target.files[0];
+    if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const wb=XLSX.read(ev.target.result,{type:"binary"});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const firstRow=XLSX.utils.sheet_to_json(ws,{header:1})[0]||[];
+      const isPlatformFormat=firstRow.includes("Unit ID");
+      const isOriginalFormat=wb.SheetNames.includes("Tenant Schedule");
+      const isUnrecognised=!isPlatformFormat&&!isOriginalFormat;
+
+      if(isUnrecognised){
+        const proceed=window.confirm(`⚠️ This spreadsheet doesn't match the expected format.\n\nExpected either:\n• Your original Storage Schedule (with a "Tenant Schedule" sheet)\n• A platform backup (with a "Unit ID" column)\n\nThe importer will try to read it as an original Storage Schedule format.\n\nProceed anyway?`);
+        if(!proceed){e.target.value="";return;}
+      }
+
+      let records=isPlatformFormat?parsePlatformFormat(ws):parseOriginalFormat(ws);
+      records=records.filter(r=>r.id);
+
+      if(records.length===0){
+        alert("❌ No valid records found. The spreadsheet may be in an unsupported format or may be empty.");
+        e.target.value="";
+        return;
+      }
+      // Check for duplicates
+      const existingIds=new Set(data.map(d=>d.id));
+      const duplicates=records.filter(r=>existingIds.has(r.id)).map(r=>r.id);
+      let confirmMsg=`Import ${records.length} record${records.length!==1?"s":""} from "${file.name}"?\n\nThis will merge with your existing data.`;
+      if(duplicates.length>0) confirmMsg+=`\n\n⚠️ ${duplicates.length} existing unit${duplicates.length!==1?"s":""} will be overwritten: ${duplicates.slice(0,5).join(", ")}${duplicates.length>5?" and more...":""}`;
+      if(!window.confirm(confirmMsg)) return;
+      onImport(records);
+    };
+    reader.readAsBinaryString(file);
+    e.target.value="";
+  }
+
+  return(
+    <div>
+      <div className="g2" style={{marginBottom:0}}>
         <div className="card">
-          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>📥 Export Tenant Data</div>
-          <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>Downloads all tenant records as an Excel spreadsheet. Includes all fields — rent, status, contacts, deposits, dates.</p>
-          <button className="sp-btn sp-btn-primary" onClick={exportData}>⬇️ Download as Excel</button>
+          <div className="ch"><div className="ct">📥 Export — Original Format</div></div>
+          <div className="cb">
+            <p className="tsub tsm" style={{marginBottom:14}}>Downloads in the same layout as your original Storage Schedule spreadsheet — same columns, same section headers, same sheet name.</p>
+            <button className="btn btn-success" onClick={exportOriginal}>⬇️ Download as Storage Schedule</button>
+          </div>
         </div>
-        <div className="card" style={{ border: "2px solid var(--gold)" }}>
-          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>🚨 Emergency Backup</div>
-          <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>Downloads everything — all tenant data as a spreadsheet plus every document. Save this externally each week.</p>
-          <button className="sp-btn sp-btn-navy" onClick={fullBackup}>⬇️ Download Full Backup (Data + Documents)</button>
+        <div className="card" style={{border:"2px solid var(--gold)"}}>
+          <div className="ch"><div className="ct">🚨 Emergency Backup</div></div>
+          <div className="cb">
+            <p className="tsub tsm" style={{marginBottom:14}}>Downloads everything — all tenant data as a spreadsheet plus every document stored on the platform. Save this to an external hard drive or cloud storage weekly.</p>
+            <button className="btn btn-navy" onClick={fullBackup}>⬇️ Download Full Backup (Data + All Documents)</button>
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{marginTop:20}}>
+        <div className="ch"><div className="ct">📤 Import from Excel</div></div>
+        <div className="cb">
+          <p className="tsub tsm" style={{marginBottom:14}}>
+            Upload either your <strong>original Storage Schedule spreadsheet</strong> or a <strong>platform backup</strong> — the format is detected automatically.
+          </p>
+          <input id="xlsxImport" type="file" accept=".xlsx,.xls,.csv" style={{display:"none"}} onChange={handleFile}/>
+          <button className="btn btn-navy" onClick={()=>document.getElementById("xlsxImport").click()}>⬆️ Choose Excel File to Import</button>
         </div>
       </div>
     </div>
   );
 }
+
+
+// ─── Users & Security ─────────────────────────────────────────────────────────
+function UsersPage({token,currentUserEmail,orgId}){
+  const [users,setUsers]=useState([]);
+  const [inviteEmail,setInviteEmail]=useState("");
+  const [newEmail,setNewEmail]=useState("");
+  const [newPassword,setNewPassword]=useState("");
+  const [inviting,setInviting]=useState(false);
+  const [adding,setAdding]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [showAdd,setShowAdd]=useState(false);
+  const [myFactors,setMyFactors]=useState([]);
+  const [mfaLoading,setMfaLoading]=useState(false);
+  const [showChangePw,setShowChangePw]=useState(false);
+  const [newPw,setNewPw]=useState("");
+  const [confirmPw,setConfirmPw]=useState("");
+  const [changingPw,setChangingPw]=useState(false);
+  const [loginLog,setLoginLog]=useState([]);
+  const [logLoading,setLogLoading]=useState(true);
+
+  useEffect(()=>{
+    listUsers().then(u=>{setUsers(u);}).catch(()=>{setUsers([]);});
+    mfaListFactors(token).then(f=>setMyFactors(Array.isArray(f)?f:[])).catch(()=>{});
+    loginLogList(token).then(l=>{setLoginLog(Array.isArray(l)?l:[]);setLogLoading(false);}).catch(()=>setLogLoading(false));
+  },[token]);
+
+  async function handleInvite(){
+    if(!inviteEmail) return;
+    setInviting(true); setMsg("");
+    const tempPass = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-4).toUpperCase() + "!1";
+    try{
+      // Create the user in Supabase
+      const d=await adminCall("createUser",{email:inviteEmail,password:tempPass});
+      if(d.error) throw new Error("User creation failed: "+(d.error_description||d.msg));
+      // Send invite email via serverless function
+      const emailResult=await sendInviteEmail(inviteEmail, tempPass);
+      if(emailResult.id){
+        setMsg(`✅ Invitation sent to ${inviteEmail} — they will receive an email with login details`);
+      } else {
+        setMsg(`✅ User created but email may not have sent — temporary password: ${tempPass}`);
+      }
+      setInviteEmail("");
+      const fresh=await listUsers(); setUsers(fresh);
+    }catch(e){
+      setMsg(`❌ Could not send invite — ${e.message}`);
+    }
+    setInviting(false);
+  }
+
+  async function handleAddUser(){
+    if(!newEmail||!newPassword) return;
+    setAdding(true); setMsg("");
+    try{
+      const d=await adminCall("createUser",{email:newEmail,password:newPassword});
+      if(d.error) throw new Error(d.error_description||d.msg||"Failed");
+      setMsg(`✅ User ${newEmail} created successfully`);
+      setNewEmail(""); setNewPassword(""); setShowAdd(false);
+      const fresh=await listUsers(); setUsers(fresh);
+    }catch(e){ setMsg(`❌ Could not create user — ${e.message}`); }
+    setAdding(false);
+  }
+
+  async function handleRemoveUser(userId,email){
+    if(!window.confirm(`Remove ${email} from CamStorage? They will no longer be able to log in.`)) return;
+    try{
+      await deleteUser(userId);
+      setMsg(`✅ ${email} has been removed`);
+      const fresh=await listUsers(); setUsers(fresh);
+    }catch(e){ setMsg("❌ Could not remove user"); }
+  }
+
+  async function handleRemoveMFA(factorId){
+    if(!window.confirm("Remove your MFA authenticator? You will no longer be asked for a code when logging in.")) return;
+    setMfaLoading(true);
+    try{
+      await mfaUnenroll(factorId,token);
+      setMyFactors([]);
+      setMsg("✅ MFA removed from your account");
+    }catch(e){ setMsg("❌ Could not remove MFA"); }
+    setMfaLoading(false);
+  }
+
+  async function handleChangePassword(){
+    if(!newPw||!confirmPw){setMsg("❌ Please fill in all password fields");return;}
+    if(newPw!==confirmPw){setMsg("❌ New passwords do not match");return;}
+    if(newPw.length<8){setMsg("❌ Password must be at least 8 characters");return;}
+    setChangingPw(true); setMsg("");
+    try{
+      const ok=await changePassword(newPw,token);
+      if(ok){
+        setMsg("✅ Password changed successfully");
+        setNewPw(""); setConfirmPw(""); setShowChangePw(false);
+      } else {
+        setMsg("❌ Could not change password — please try again");
+      }
+    }catch(e){setMsg("❌ Error: "+e.message);}
+    setChangingPw(false);
+  }
+
+  const verifiedFactors=myFactors.filter(f=>f.status==="verified");
+
+  return(
+    <div>
+      {/* Change Password */}
+      <div className="card">
+        <div className="ch">
+          <div className="ct">🔑 Change My Password</div>
+          <button className="btn btn-outline btn-sm" onClick={()=>{setShowChangePw(!showChangePw);setMsg("");}}>{showChangePw?"✕ Cancel":"Change Password"}</button>
+        </div>
+        {showChangePw&&(
+          <div className="cb">
+            <div className="fg">
+              <div className="fgi"><label>New Password</label><input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="At least 8 characters"/></div>
+              <div className="fgi"><label>Confirm New Password</label><input type="password" value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Repeat new password"/></div>
+            </div>
+            <button className="btn btn-primary" style={{marginTop:12}} onClick={handleChangePassword} disabled={changingPw||!newPw||!confirmPw}>{changingPw?"Changing...":"Update Password"}</button>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="ch"><div className="ct">🔐 My Two-Factor Authentication</div></div>
+        <div className="cb">
+          {verifiedFactors.length>0?(
+            <div>
+              <div style={{background:"#EBF5F0",border:"1.5px solid #BDE5D3",borderRadius:9,padding:"12px 16px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <strong style={{color:"var(--success)"}}>✅ MFA is active on your account</strong>
+                  <div className="tsub tsm" style={{marginTop:3}}>You are protected with an authenticator app. Each login requires a 6-digit code.</div>
+                </div>
+              </div>
+              {verifiedFactors.map(f=>(
+                <div key={f.id} className="flex-bet">
+                  <div>
+                    <div style={{fontWeight:600,fontSize:13}}>{f.friendly_name||"Authenticator App"}</div>
+                    <div className="tsub tsm">Added: {f.created_at?new Date(f.created_at).toLocaleDateString("en-GB"):"Unknown"}</div>
+                  </div>
+                  <button className="btn btn-danger btn-sm" onClick={()=>handleRemoveMFA(f.id)} disabled={mfaLoading}>Remove MFA</button>
+                </div>
+              ))}
+            </div>
+          ):(
+            <div style={{background:"#FFF8E6",border:"1.5px solid #F5E0A0",borderRadius:9,padding:"12px 16px"}}>
+              ⚠️ <strong>MFA is not enabled on your account.</strong>
+              <div className="tsub tsm" style={{marginTop:3}}>Sign out and sign back in — you will be prompted to set up your authenticator app during login.</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {msg&&<div style={{padding:"10px 14px",background:msg.startsWith("✅")?"#EBF5F0":"#FFF0EE",border:`1.5px solid ${msg.startsWith("✅")?"#BDE5D3":"#FFCDD2"}`,borderRadius:9,marginBottom:14,fontSize:13}}>{msg}</div>}
+
+      <div className="card">
+        <div className="ch">
+          <div className="ct">Active Users</div>
+          <div className="fr">
+            <span className="chip">{users.length} users</span>
+            <button className="btn btn-primary btn-sm" onClick={()=>setShowAdd(!showAdd)}>{showAdd?"✕ Cancel":"+ Add User"}</button>
+          </div>
+        </div>
+        <div className="cb">
+          {showAdd&&(
+            <div style={{background:"#F8FAFC",border:"1.5px dashed #C9D8E8",borderRadius:9,padding:"16px",marginBottom:16}}>
+              <div style={{fontFamily:"var(--fh)",fontWeight:700,fontSize:13,marginBottom:12,color:"var(--navy)"}}>Create New User</div>
+              <div className="fg">
+                <div className="fgi"><label>Email Address</label><input type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)} placeholder="colleague@example.com"/></div>
+                <div className="fgi"><label>Temporary Password</label><input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="They can change this after login"/></div>
+              </div>
+              <button className="btn btn-primary" style={{marginTop:12}} onClick={handleAddUser} disabled={adding||!newEmail||!newPassword}>{adding?"Creating...":"Create User"}</button>
+              <div className="tsub tsm" style={{marginTop:8}}>The user can log in immediately and will be prompted to set up MFA on first login.</div>
+            </div>
+          )}
+          {users.length===0&&<p className="tsub tsm">Loading users...</p>}
+          {users.map(u=>(
+            <div key={u.id} className="user-card">
+              <div className="user-info-block">
+                <div className="uemail">{u.email} {u.email===currentUserEmail&&<span className="chip" style={{marginLeft:6}}>You</span>}</div>
+                <div className="umeta">
+                  Last sign in: {u.last_sign_in_at?new Date(u.last_sign_in_at).toLocaleDateString("en-GB"):"Never"} ·
+                  Created: {new Date(u.created_at).toLocaleDateString("en-GB")}
+                  {u.factors?.length>0&&<span style={{color:"var(--success)",fontWeight:600}}> · 🔐 MFA on</span>}
+                  {(!u.factors||u.factors.length===0)&&<span style={{color:"#E65100"}}> · No MFA</span>}
+                </div>
+              </div>
+              <div className="fr">
+                {u.email!==currentUserEmail&&(
+                  <button className="btn btn-danger btn-sm" onClick={()=>handleRemoveUser(u.id,u.email)}>Remove</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="invite-box">
+        <div className="invite-title">✉️ Invite User by Email</div>
+        <p className="tsub tsm" style={{marginBottom:12}}>Send an invitation email — the recipient clicks a link to set their own password and will be prompted to set up MFA on first login.</p>
+        <div className="invite-row">
+          <div style={{flex:1}}>
+            <input className="sin" style={{width:"100%"}} type="email" placeholder="colleague@camstorage.co.uk" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)}/>
+          </div>
+          <button className="btn btn-primary" onClick={handleInvite} disabled={inviting}>{inviting?"Sending...":"Send Invite"}</button>
+        </div>
+      </div>
+
+      {/* Login Log */}
+      <div className="card" style={{marginTop:24}}>
+        <div className="ch">
+          <div className="ct">Login History</div>
+          {logLoading&&<span style={{fontSize:12,color:"var(--sub)"}}>Loading…</span>}
+        </div>
+        {!logLoading&&loginLog.length===0&&(
+          <div style={{padding:"20px",textAlign:"center",color:"var(--sub)",fontSize:13}}>
+            No login records yet — logins will be recorded here from now on.
+          </div>
+        )}
+        {!logLoading&&loginLog.length>0&&(
+          <div className="tw">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Day</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loginLog.map((l,i)=>{
+                  const d=new Date(l.logged_in_at);
+                  return(
+                    <tr key={i}>
+                      <td style={{fontWeight:500}}>{l.email}</td>
+                      <td>{d.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</td>
+                      <td>{d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</td>
+                      <td style={{color:"var(--sub)",fontSize:12}}>{d.toLocaleDateString("en-GB",{weekday:"long"})}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ─── Tenant Documents ─────────────────────────────────────────────────────────
+function TenantDocuments({tenantId, token}){
+  // Preserve folder prefixes like archive/ and enquiry/ — only sanitise each segment
+  const safeId=(tenantId||"").split("/").map(seg=>seg.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,"_")).join("/");
+  const [docs,setDocs]=useState([]);
+  const [tags,setTags]=useState({});
+  const [uploading,setUploading]=useState(false);
+  const [dragOver,setDragOver]=useState(false);
+  const [pendingTag,setPendingTag]=useState(null); // {file, tag}
+  const [tagFilter,setTagFilter]=useState("all");
+  const [viewerDoc,setViewerDoc]=useState(null);
+  const inputRef=useRef(null);
+
+  async function downloadAll(){
+    if(!docs||docs.length===0) return;
+    if(docs.length>1&&!window.confirm(`Download all ${docs.length} documents?\n\nYour browser may ask permission to download multiple files — click Allow when prompted.`)) return;
+    for(const doc of docs){
+      const path=`${safeId}/${doc.name}`;
+      try{
+        const url=await getSignedUrl(path,token);
+        if(!url) continue;
+        const r=await fetch(url);
+        const blob=await r.blob();
+        const tagInfo=tags[path];
+        const displayName=(tagInfo?.original_name||doc.name).replace(/^\d+_/,"");
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(blob);
+        a.download=displayName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+        await new Promise(res=>setTimeout(res,300));
+      }catch(e){}
+    }
+  }
+
+  async function reload(){
+    const [d,t]=await Promise.all([listDocuments(safeId,token),getDocTags(safeId, token)]);
+    setDocs(Array.isArray(d)?d:[]);
+    const tagMap={};
+    (Array.isArray(t)?t:[]).forEach(r=>{tagMap[r.file_path]=r;});
+    setTags(tagMap);
+  }
+
+  useEffect(()=>{
+    if(!tenantId) return;
+    Promise.all([listDocuments(safeId,token),getDocTags(safeId, token)]).then(([d,t])=>{
+      setDocs(Array.isArray(d)?d:[]);
+      const tagMap={};
+      (Array.isArray(t)?t:[]).forEach(r=>{tagMap[r.file_path]=r;});
+      setTags(tagMap);
+    });
+  },[tenantId,token,safeId]);
+
+  async function handleUpload(files){
+    if(!files||!files.length) return;
+    setUploading(true);
+    const fileArr=Array.from(files);
+    let failed=0;
+    for(const file of fileArr){
+      try{
+        const path=await uploadDocument(file,safeId,token);
+        await saveDocTag(path,safeId,"Other",file.name,token,orgId);
+      }catch(e){failed++;}
+    }
+    await reload();
+    setUploading(false);
+    if(failed>0) alert(`⚠️ ${failed} file${failed!==1?"s":""} failed to upload. Please check your connection and try again.`);
+  }
+
+  async function confirmUpload(){
+    if(!pendingTag) return;
+    setUploading(true);
+    try{
+      const path=await uploadDocument(pendingTag.file,safeId,token);
+      await saveDocTag(path,safeId,pendingTag.tag,pendingTag.file.name,token,orgId);
+      setPendingTag(null);
+      await reload();
+    }catch(e){
+      alert("Upload failed — "+e.message+"\n\nPlease try again.");
+      setPendingTag(null);
+    }
+    setUploading(false);
+  }
+
+  async function handleDelete(doc){
+    const path=`${safeId}/${doc.name}`;
+    if(!window.confirm(`Delete "${doc.name.replace(/^\d+_/,'')}"?`)) return;
+    await deleteDocument(path,token);
+    await deleteDocTag(path,token);
+    await reload();
+  }
+
+  async function handleTagChange(filePath, newTag){
+    await updateDocTag(filePath,newTag,token);
+      // Reload tags from DB to ensure UI reflects actual saved state
+    const fresh=await getDocTags(safeId, token, orgId);
+    const tagMap={};
+    (Array.isArray(fresh)?fresh:[]).forEach(r=>{tagMap[r.file_path]=r;});
+    setTags(tagMap);
+  }
+
+  const allDocs=docs.filter(d=>tagFilter==="all"||tags[`${safeId}/${d.name}`]?.tag===tagFilter);
+
+  return(
+    <div>
+      {/* Tag filter and download all */}
+      <div className="fr" style={{flexWrap:"wrap",gap:4,marginBottom:10,justifyContent:"space-between"}}>
+        <div className="fr" style={{flexWrap:"wrap",gap:4}}>
+          {["all",...DOC_TAGS].map(t=>(
+            <button key={t} className={`btn btn-sm ${tagFilter===t?"btn-primary":"btn-outline"}`}
+              style={{fontSize:11,padding:"3px 8px"}} onClick={()=>setTagFilter(t)}>
+              {t==="all"?"All":t}
+            </button>
+          ))}
+        </div>
+        {docs.length>0&&<button className="btn btn-outline btn-sm" onClick={downloadAll} title="Download all documents for this tenant">⬇️ Download All</button>}
+      </div>
+
+      {/* Upload zone */}
+      <div className={`upload-zone${dragOver?" drag-over":""}`}
+        onClick={()=>inputRef.current?.click()}
+        onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+        onDragLeave={()=>setDragOver(false)}
+        onDrop={e=>{e.preventDefault();setDragOver(false);handleUpload(e.dataTransfer.files);}}
+      >
+        <input ref={inputRef} type="file" multiple onChange={e=>handleUpload(e.target.files)}/>
+        <div style={{fontSize:24,marginBottom:6}}>📎</div>
+        <div style={{fontSize:13,fontWeight:600,color:"var(--navy)"}}>Drop files here or click to upload</div>
+        <div style={{fontSize:11,color:"var(--sub)",marginTop:4}}>You can drop multiple files at once — any file type supported</div>
+        {uploading&&<div style={{marginTop:6,fontSize:12,color:"var(--gold)"}}>⏳ Uploading…</div>}
+      </div>
+
+      {/* Tag selection modal for pending upload */}
+      {pendingTag&&(
+        <div style={{background:"#F8FAFC",border:"1.5px solid var(--gold)",borderRadius:9,padding:14,marginTop:10}}>
+          <div style={{fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:8}}>
+            📎 {pendingTag.file.name} — select a tag:
+          </div>
+          <div className="fr" style={{flexWrap:"wrap",gap:6,marginBottom:10}}>
+            {DOC_TAGS.map(t=>(
+              <button key={t} className={`btn btn-sm ${pendingTag.tag===t?"btn-primary":"btn-outline"}`}
+                style={{fontSize:12}} onClick={()=>setPendingTag(p=>({...p,tag:t}))}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="fr" style={{gap:8}}>
+            <button className="btn btn-primary btn-sm" onClick={confirmUpload}>⬆️ Upload as "{pendingTag.tag}"</button>
+            <button className="btn btn-outline btn-sm" onClick={()=>setPendingTag(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Document list */}
+      {allDocs.length>0&&(
+        <div style={{marginTop:10,border:"1px solid #E4EAF2",borderRadius:9,overflow:"hidden"}}>
+          {allDocs.map(doc=>{
+            const path=`${safeId}/${doc.name}`;
+            const tagInfo=tags[path];
+            const displayName=(tagInfo?.original_name||doc.name).replace(/^\d+_/,"");
+            return(
+              <div key={doc.name} className="doc-item">
+                <div className="doc-icon">{fileIcon(displayName)}</div>
+                <div className="doc-info">
+                  <div className="doc-name">{displayName}</div>
+                  <div className="doc-meta" style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <select
+                      key={tagInfo?.tag||"none"}
+                      style={{fontSize:11,padding:"2px 6px",borderRadius:4,border:"1px solid #C9D8E8",color:"var(--navy)",background:"#F8FAFC",cursor:"pointer"}}
+                      defaultValue={tagInfo?.tag||""}
+                      onChange={e=>e.target.value&&handleTagChange(path,e.target.value)}>
+                      <option value="">{tagInfo?.tag||"— Add tag —"}</option>
+                      {DOC_TAGS.map(t=><option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <span style={{color:"var(--sub)"}}>{formatBytes(doc.metadata?.size)}</span>
+                    {doc.created_at&&<span style={{color:"var(--sub)"}}>{new Date(doc.created_at).toLocaleDateString("en-GB")}</span>}
+                  </div>
+                </div>
+                <div className="doc-actions">
+                  <button className="btn btn-outline btn-sm" onClick={async()=>{const url=await getSignedUrl(path,token);if(url)setViewerDoc({url,name:displayName});}}>👁 View</button>
+                  <button className="btn btn-danger btn-sm" onClick={()=>handleDelete(doc)}>🗑️</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {allDocs.length===0&&!uploading&&!pendingTag&&(
+        <p style={{fontSize:12,color:"var(--sub)",textAlign:"center",marginTop:10}}>
+          {tagFilter==="all"?"No documents yet":"No documents with this tag"}
+        </p>
+      )}
+      {viewerDoc&&<DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={()=>setViewerDoc(null)}/>}
+    </div>
+  );
+}
+
+
+function DocumentsPage({data,token,showToast,orgId}){
+  const [folders,setFolders]=useState([]); // just folder names
+  const [folderDocs,setFolderDocs]=useState({}); // loaded docs per folder
+  const [allTags,setAllTags]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [loadingFolder,setLoadingFolder]=useState({});
+  const [viewerDoc,setViewerDoc]=useState(null);
+  const [q,setQ]=useState("");
+  const [tagFilter,setTagFilter]=useState("all");
+  const [expanded,setExpanded]=useState({});
+  const [enquiries,setEnquiries]=useState([]);
+
+  useEffect(()=>{
+    // Only load folder list and tags on mount — not all files
+    Promise.all([
+      fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`,{
+        method:"POST",
+        headers:{...BASE_H,Authorization:`Bearer ${token}`},
+        body:JSON.stringify({prefix:"",limit:500,delimiter:"/"})
+      }).then(r=>r.ok?r.json():[]),
+      getAllDocTags(token),
+      enquiryList(token)
+    ]).then(([flds,tags,enqs])=>{
+      // Filter out archive folders
+      const validFolders=(Array.isArray(flds)?flds:[])
+        .map(f=>(f.name||"").replace(/\/$/,""))
+        .filter(f=>f&&f!=="archive"&&f!=="enquiry_archive");
+      setFolders(validFolders);
+      const tagMap={};
+      (Array.isArray(tags)?tags:[]).forEach(r=>{tagMap[r.file_path]=r;});
+      setAllTags(tagMap);
+      setEnquiries(Array.isArray(enqs)?enqs:[]);
+      setLoading(false);
+    });
+  },[token]);
+
+  async function loadFolder(folderName){
+    if(folderDocs[folderName]) return; // already loaded
+    setLoadingFolder(l=>({...l,[folderName]:true}));
+    try{
+      const fr=await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`,{
+        method:"POST",
+        headers:{...BASE_H,Authorization:`Bearer ${token}`},
+        body:JSON.stringify({prefix:folderName+"/",limit:200,sortBy:{column:"created_at",order:"desc"}})
+      });
+      const files=await fr.json();
+      const realFiles=(Array.isArray(files)?files:[]).filter(f=>f.id).map(f=>({
+        ...f,
+        name:folderName+"/"+f.name,
+        filename:f.name,
+        path:folderName+"/"+f.name
+      }));
+      setFolderDocs(d=>({...d,[folderName]:realFiles}));
+    }catch(e){
+      setFolderDocs(d=>({...d,[folderName]:[]}));
+    }
+    setLoadingFolder(l=>({...l,[folderName]:false}));
+  }
+
+  async function toggleExpand(folderName){
+    const nowOpen=!expanded[folderName];
+    setExpanded(e=>({...e,[folderName]:nowOpen}));
+    if(nowOpen) await loadFolder(folderName);
+  }
+
+  async function handleDelete(path, folderName){
+    if(!window.confirm("Delete this document?")) return;
+    await deleteDocument(path,token);
+    await deleteDocTag(path,token);
+    // Remove from local state
+    setFolderDocs(d=>({...d,[folderName]:(d[folderName]||[]).filter(f=>f.path!==path)}));
+  }
+
+  async function handleTagChange(filePath, newTag){
+    await updateDocTag(filePath,newTag,token);
+    const fresh=await getAllDocTags(token, orgId);
+    const tagMap={};
+    (Array.isArray(fresh)?fresh:[]).forEach(r=>{tagMap[r.file_path]=r;});
+    setAllTags(tagMap);
+    if(showToast) showToast("✅ Tag saved");
+  }
+
+  function getFolderName(folderName){
+    const isEnquiry=folderName.startsWith("enquiry_");
+    const enquiryId=isEnquiry?folderName.replace("enquiry_",""):null;
+    const enquiry=enquiryId?enquiries.find(e=>String(e.id)===enquiryId):null;
+    if(enquiry) return `📋 ${enquiry.name} (Enquiries)`;
+    const safeId=folderName.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,'_');
+    const tenant=data.find(t=>{
+      const ts=(t.id||"").replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,'_');
+      return ts===safeId||t.id===folderName;
+    });
+    return tenant?(tenant.tenant||tenant.label||("Unit "+folderName)):("Unit "+folderName);
+  }
+
+  const filteredFolders=folders.filter(f=>{
+    const name=getFolderName(f);
+    return !q||name.toLowerCase().includes(q.toLowerCase())||f.toLowerCase().includes(q.toLowerCase());
+  });
+
+  return(
+    <div>
+      <div className="fb mb20" style={{flexWrap:"wrap",gap:10}}>
+        <div className="fr" style={{flexWrap:"wrap",gap:6}}>
+          <input className="sin sinw" placeholder="Search by tenant or name…" value={q} onChange={e=>setQ(e.target.value)}/>
+          {["all",...DOC_TAGS].map(t=>(
+            <button key={t} className={`btn btn-sm ${tagFilter===t?"btn-primary":"btn-outline"}`}
+              style={{fontSize:11}} onClick={()=>setTagFilter(t)}>
+              {t==="all"?"All Tags":t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading&&<div className="loading">⏳ Loading…</div>}
+
+      {!loading&&filteredFolders.length===0&&(
+        <div className="card"><div className="cb" style={{textAlign:"center",padding:40}}>
+          <div style={{fontSize:40,marginBottom:12}}>📁</div>
+          <div style={{fontSize:14,fontWeight:600,color:"var(--navy)"}}>No documents found</div>
+        </div></div>
+      )}
+
+      {filteredFolders.map(folderName=>{
+        const name=getFolderName(folderName);
+        const isOpen=expanded[folderName];
+        const docs=(folderDocs[folderName]||[]).filter(doc=>{
+          const tagInfo=allTags[doc.path];
+          return tagFilter==="all"||tagInfo?.tag===tagFilter;
+        });
+        const isLoading=loadingFolder[folderName];
+        const totalCount=folderDocs[folderName]?.length;
+
+        return(
+          <div key={folderName} className="card" style={{marginBottom:8}}>
+            <div className="ch" style={{cursor:"pointer"}} onClick={()=>toggleExpand(folderName)}>
+              <div className="fr" style={{gap:10,alignItems:"center"}}>
+                <span style={{fontSize:16,color:"var(--navy)"}}>{isOpen?"▾":"▸"}</span>
+                <div className="ct" style={{fontSize:14}}>{name}</div>
+                {totalCount!=null&&<span className="chip">{totalCount} file{totalCount!==1?"s":""}</span>}
+              </div>
+            </div>
+            {isOpen&&(
+              <div className="cb" style={{padding:0}}>
+                {isLoading&&<div style={{padding:16,color:"var(--sub)",fontSize:13}}>⏳ Loading documents…</div>}
+                {!isLoading&&docs.length===0&&<div style={{padding:16,color:"var(--sub)",fontSize:13}}>No documents{tagFilter!=="all"?" with this tag":""}</div>}
+                {!isLoading&&docs.map(doc=>{
+                  const tagInfo=allTags[doc.path];
+                  const displayName=(tagInfo?.original_name||doc.filename).replace(/^\d+_/,"");
+                  return(
+                    <div key={doc.path} className="doc-item">
+                      <div className="doc-icon">{fileIcon(displayName)}</div>
+                      <div className="doc-info">
+                        <div className="doc-name">{displayName}</div>
+                        <div className="doc-meta" style={{display:"flex",alignItems:"center",gap:8}}>
+                          <select
+                            key={tagInfo?.tag||"none"}
+                            style={{fontSize:11,padding:"2px 6px",borderRadius:4,border:"1px solid #C9D8E8",color:"var(--navy)",background:"#F8FAFC"}}
+                            defaultValue={tagInfo?.tag||""}
+                            onChange={e=>e.target.value&&handleTagChange(doc.path,e.target.value)}>
+                            <option value="">{tagInfo?.tag||"— Tag —"}</option>
+                            {DOC_TAGS.map(t=><option key={t} value={t}>{t}</option>)}
+                          </select>
+                          <span style={{color:"var(--sub)"}}>{formatBytes(doc.metadata?.size)}</span>
+                          {doc.created_at&&<span style={{color:"var(--sub)"}}>{new Date(doc.created_at).toLocaleDateString("en-GB")}</span>}
+                        </div>
+                      </div>
+                      <div className="doc-actions">
+                        <button className="btn btn-outline btn-sm" onClick={async()=>{const url=await getSignedUrl(doc.path,token);if(url)setViewerDoc({url,name:displayName});}}>👁 View</button>
+                        <button className="btn btn-danger btn-sm" onClick={()=>handleDelete(doc.path,folderName)}>🗑️</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {viewerDoc&&<DocViewer url={viewerDoc.url} name={viewerDoc.name} onClose={()=>setViewerDoc(null)}/>}
+    </div>
+  );
+}
+
+
+// ─── Archive Page ─────────────────────────────────────────────────────────────
+function DocCount({archiveId, token}){
+  const [count,setCount]=useState(null);
+  useEffect(()=>{
+    listDocuments("archive/"+archiveId,token).then(d=>{
+      setCount(Array.isArray(d)?d.length:0);
+    });
+  },[archiveId,token]);
+  if(count===null) return null;
+  return <span style={{marginLeft:8,color:count>0?"var(--navy)":"var(--sub)",fontWeight:count>0?600:400}}>
+    {count>0?`📎 ${count} doc${count!==1?"s":""}`:""}</span>;
+}
+
+function ArchivePage({token,onRestore,onPermanentDelete,orgId}){
+  const [archived,setArchived]=useState([]);
+  const [deleted,setDeleted]=useState([]);
+  const [tab,setTab]=useState("archived");
+  const [loading,setLoading]=useState(true);
+  const [viewRecord,setViewRecord]=useState(null); // {data, name, archiveId}
+  const [viewDocs,setViewDocs]=useState(null); // {archiveId, name}
+
+  async function reload(){
+    const [a,d]=await Promise.all([archiveList(token),dbGetDeleted(token)]);
+    setArchived(Array.isArray(a)?a:[]);
+    setDeleted(Array.isArray(d)?d:[]);
+    setLoading(false);
+  }
+
+  useEffect(()=>{
+    Promise.all([archiveList(token),dbGetDeleted(token)]).then(([a,d])=>{
+      setArchived(Array.isArray(a)?a:[]);
+      setDeleted(Array.isArray(d)?d:[]);
+      setLoading(false);
+    });
+  },[token]);
+
+  async function restore(id, isDeleted=false){await onRestore(id, isDeleted);reload();}
+  async function permDelete(id, isDeleted=false){await onPermanentDelete(id, isDeleted);reload();}
+
+  function daysLeft(ts){
+    if(!ts) return "";
+    const days=30-Math.floor((Date.now()-new Date(ts).getTime())/86400000);
+    return days<=0?"Expires today":`${days} days left`;
+  }
+
+  function ArchivedRow({record}){
+    const t=record.tenant_data||{};
+    const name=t.tenant||t.label||("Unit "+record.original_unit_id);
+    const archivedDate=new Date(record.archived_at).toLocaleDateString("en-GB");
+    return(
+      <div className="doc-item">
+        <div className="doc-icon">{t.category==="Residential"?"🏠":t.category==="Commercial"?"🏢":"📦"}</div>
+        <div className="doc-info">
+          <div className="doc-name">{name}</div>
+          <div className="doc-meta">
+            Unit {record.original_unit_id}
+            {t.row_name&&` · ${t.row_name}`}
+            {t.rent&&` · £${t.rent}/mo`}
+            {t.email&&` · ${t.email}`}
+            <span style={{marginLeft:8,color:"var(--sub)"}}>Archived {archivedDate}</span>
+            <DocCount archiveId={record.id} token={token}/>
+          </div>
+        </div>
+        <div className="doc-actions">
+          <button className="btn btn-outline btn-sm" onClick={()=>setViewRecord({data:t,name,archiveId:record.id})}>📋 Details</button>
+          <button className="btn btn-outline btn-sm" onClick={()=>setViewDocs({archiveId:record.id,name})}>📁 Docs</button>
+          <button className="btn btn-success btn-sm" onClick={()=>restore(record.id)}>↩️ Restore</button>
+          <button className="btn btn-danger btn-sm" onClick={()=>permDelete(record.id)}>🗑️ Delete</button>
+        </div>
+      </div>
+    );
+  }
+
+  function DeletedRow({t}){
+    const orig=t.deleted_data?JSON.parse(t.deleted_data):t;
+    const name=orig.tenant||orig.label||("Unit "+t.id);
+    return(
+      <div className="doc-item">
+        <div className="doc-icon">{t.category==="Residential"?"🏠":t.category==="Commercial"?"🏢":"📦"}</div>
+        <div className="doc-info">
+          <div className="doc-name">{name}</div>
+          <div className="doc-meta">
+            Unit {t.id} · {t.category}
+            {orig.row_name&&` · ${orig.row_name}`}
+            {orig.rent&&` · £${orig.rent}/mo`}
+            {t.deleted_at&&<span style={{color:"#C0392B",marginLeft:8}}>⏱ {daysLeft(t.deleted_at)}</span>}
+          </div>
+        </div>
+        <div className="doc-actions">
+          <button className="btn btn-success btn-sm" onClick={()=>restore(t.id, true)}>↩️ Restore</button>
+          <button className="btn btn-danger btn-sm" onClick={()=>permDelete(t.id, true)}>🗑️ Delete</button>
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div>
+      <div className="fr" style={{gap:8,marginBottom:20}}>
+        <button className={`btn btn-sm ${tab==="archived"?"btn-primary":"btn-outline"}`} onClick={()=>setTab("archived")}>
+          📦 Archived Tenants {archived.length>0&&`(${archived.length})`}
+        </button>
+        <button className={`btn btn-sm ${tab==="deleted"?"btn-primary":"btn-outline"}`} onClick={()=>setTab("deleted")}>
+          🗑️ Recently Deleted {deleted.length>0&&`(${deleted.length})`}
+        </button>
+      </div>
+
+      {loading&&<div className="loading">⏳ Loading…</div>}
+
+      {!loading&&tab==="archived"&&(
+        <div className="card">
+          <div className="ch">
+            <div className="ct">📦 Archived Tenants</div>
+            <span className="chip">{archived.length} records</span>
+          </div>
+          {archived.length===0?(
+            <div className="cb" style={{textAlign:"center",padding:30,color:"var(--sub)"}}>
+              <div style={{fontSize:32,marginBottom:8}}>📦</div>
+              No archived tenants yet. Use the Archive button in a tenant&apos;s Edit screen to archive a departed tenant.
+            </div>
+          ):(
+            <div style={{padding:0}}>
+              {archived.map(r=><ArchivedRow key={r.id} record={r}/>)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading&&tab==="deleted"&&(
+        <div className="card">
+          <div className="ch">
+            <div className="ct">🗑️ Recently Deleted</div>
+            <span className="chip">Auto-purged after 30 days</span>
+          </div>
+          {deleted.length===0?(
+            <div className="cb" style={{textAlign:"center",padding:30,color:"var(--sub)"}}>No recently deleted records</div>
+          ):(
+            <div style={{padding:0}}>
+              {deleted.map(t=><DeletedRow key={t.id} t={t}/>)}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Tenant Details Modal */}
+      {viewRecord&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setViewRecord(null)}>
+          <div className="modal" style={{maxWidth:540}}>
+            <div className="mh">
+              <div className="mt">📋 {viewRecord.name}</div>
+              <button className="mc" onClick={()=>setViewRecord(null)}>✕</button>
+            </div>
+            <div style={{padding:"16px 22px"}}>
+              <div className="dgrid" style={{gridTemplateColumns:"1fr 1fr",gap:"10px 20px"}}>
+                {[
+                  ["Unit ID", viewRecord.data.id||viewRecord.data.label||"—"],
+                  ["Category", viewRecord.data.category||"—"],
+                  ["Status at archive", viewRecord.data.status||"—"],
+                  ["Row / Location", viewRecord.data.row_name||"—"],
+                  ["Email", viewRecord.data.email||"—"],
+                  ["Phone", viewRecord.data.phone||"—"],
+                  ["Rent (ex-VAT)", viewRecord.data.rent?`£${viewRecord.data.rent}/mo`:"—"],
+                  ["Rent (inc-VAT)", viewRecord.data.vat_rent?`£${viewRecord.data.vat_rent}/mo`:"—"],
+                  ["Payment method", viewRecord.data.payment||"—"],
+                  ["Move-in date", viewRecord.data.move_in_date||"—"],
+                  ["Move-out date", viewRecord.data.move_out_date||"—"],
+                  ["Key number", viewRecord.data.key_number||"—"],
+                  ["Lock deposit paid", viewRecord.data.lock_deposit_paid||"—"],
+                  ["Lock deposit amount", viewRecord.data.lock_deposit_amount?`£${viewRecord.data.lock_deposit_amount}`:"—"],
+                  ["Tenant deposit", viewRecord.data.tenant_deposit?`£${viewRecord.data.tenant_deposit}`:"—"],
+                  ["Address", viewRecord.data.address||"—"],
+                ].map(([k,v])=>(
+                  <div key={k}>
+                    <div style={{fontSize:10,fontWeight:600,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:2}}>{k}</div>
+                    <div style={{fontSize:13,color:"var(--text)"}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              {viewRecord.data.notes&&(
+                <div style={{marginTop:16,paddingTop:14,borderTop:"1px solid #E4EAF2"}}>
+                  <div style={{fontSize:10,fontWeight:600,color:"var(--sub)",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4}}>Notes</div>
+                  <div style={{fontSize:13,color:"var(--text)",whiteSpace:"pre-wrap"}}>{viewRecord.data.notes}</div>
+                </div>
+              )}
+              <div style={{marginTop:16,textAlign:"right"}}>
+                <button className="btn btn-outline btn-sm" onClick={()=>{setViewDocs({archiveId:viewRecord.archiveId,name:viewRecord.name});setViewRecord(null);}}>📁 View Documents</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archive Documents Modal */}
+      {viewDocs&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setViewDocs(null)}>
+          <div className="modal" style={{maxWidth:600}}>
+            <div className="mh">
+              <div className="mt">📁 Documents — {viewDocs.name}</div>
+              <button className="mc" onClick={()=>setViewDocs(null)}>✕</button>
+            </div>
+            <div style={{padding:"16px 22px"}}>
+              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token}/>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── Enquiries / CRM ─────────────────────────────────────────────────
+const ENQUIRY_STATUSES={
+  reserved:"🔒 Reserved",
+  waiting:"⏳ Waiting",
+  contacted:"📞 Contacted",
+  converted:"✅ Converted",
+  lost:"❌ Found elsewhere",
+  withdrawn:"🚫 No longer interested",
+  archived:"📦 Archived",
+};
+
+function EnquiriesPage({token,data,orgId}){
+  const [enquiries,setEnquiries]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [statusFilter,setStatusFilter]=useState("all");
+  const [catFilter,setCatFilter]=useState("all");
+  const [showForm,setShowForm]=useState(false);
+  const [editItem,setEditItem]=useState(null);
+  const [form,setForm]=useState({name:"",email:"",phone:"",category:"Storage",size_needed:"",notes:"",status:"waiting",enquiry_date:new Date().toISOString().slice(0,10),follow_up_date:"",earmarked_unit:""});
+  const [saving,setSaving]=useState(false);
+  const [convertEnquiry,setConvertEnquiry]=useState(null); // enquiry being converted to tenant
+  const [convertUnit,setConvertUnit]=useState(""); // unit ID chosen for conversion
+  const [viewDocsEnquiry,setViewDocsEnquiry]=useState(null); // enquiry whose docs are being viewed
+
+  const u=k=>e=>setForm(f=>({...f,[k]:e.target.value}));
+
+  useEffect(()=>{
+    enquiryList(token).then(d=>{setEnquiries(Array.isArray(d)?d:[]);setLoading(false);});
+  },[token]);
+
+  // Vacant units matching the enquiry's category
+  function matchingVacantUnits(enq){
+    return (data||[]).filter(u=>
+      (u.status==="available"||u.status==="vacant"||(!u.status&&!u.tenant))&&
+      (!enq.category||u.category===enq.category)
+    ).sort((a,b)=>(a.id||"").localeCompare(b.id||""));
+  }
+
+  async function handleConvert(){
+    if(!convertUnit){alert("Please select a unit first.");return;}
+    if(!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
+    // Find the unit record
+    const unit=data.find(u=>u.id===convertUnit);
+    if(!unit){alert("Unit not found.");return;}
+    // Build tenant record from enquiry data
+    const tenantData={
+      ...unit,
+      tenant:convertEnquiry.name,
+      email:convertEnquiry.email||"",
+      phone:convertEnquiry.phone||"",
+      status:"new",
+      move_in_date:new Date().toISOString().slice(0,10),
+      notes:convertEnquiry.notes||""
+    };
+    // Save tenant update
+    try{
+      await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}`,{
+        method:"PATCH",
+        headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Authorization:`Bearer ${token}`,Prefer:"return=representation"},
+        body:JSON.stringify({tenant:tenantData.tenant,email:tenantData.email,phone:tenantData.phone,status:"new",move_in_date:tenantData.move_in_date,notes:tenantData.notes})
+      });
+      // Mark enquiry as converted
+      await enquiryUpdate(convertEnquiry.id,{status:"converted"},token);
+      setEnquiries(enq=>enq.map(e=>e.id===convertEnquiry.id?{...e,status:"converted"}:e));
+      setConvertEnquiry(null);
+      setConvertUnit("");
+      alert(`✅ ${convertEnquiry.name} has been added to unit ${convertUnit} as a new tenant. Go to the Site Plan or Tenants page to complete their details.`);
+    }catch(e){alert("Conversion failed: "+e.message);}
+  }
+
+  async function reload(){
+    const d=await enquiryList(token);
+    setEnquiries(Array.isArray(d)?d:[]);
+  }
+
+  function openAdd(){
+    setForm({name:"",email:"",phone:"",category:"Storage",size_needed:"",notes:"",status:"waiting",enquiry_date:new Date().toISOString().slice(0,10),follow_up_date:"",earmarked_unit:""});
+    setEditItem(null);
+    setShowForm(true);
+  }
+
+  function openEdit(e){
+    setForm({...e,enquiry_date:e.enquiry_date||"",follow_up_date:e.follow_up_date||"",earmarked_unit:e.earmarked_unit||""});
+    setEditItem(e);
+    setShowForm(true);
+  }
+
+  async function handleSave(){
+    setSaving(true);
+    if(editItem){
+      await enquiryUpdate(editItem.id,form,token);
+      await reload();
+      setShowForm(false);
+    } else {
+      const saved=await enquirySave(form,token,orgId);
+      const newRecord=Array.isArray(saved)?saved[0]:saved;
+      await reload();
+      // Keep form open with the new record so documents can be uploaded
+      if(newRecord?.id){
+        setEditItem({...form,id:newRecord.id});
+        setForm(f=>({...f,id:newRecord.id}));
+      } else {
+        setShowForm(false);
+      }
+    }
+    setSaving(false);
+  }
+
+  async function handleDelete(id){
+    if(!window.confirm("Remove this enquiry? This cannot be undone.")) return;
+    // Also delete any documents stored for this enquiry
+    try{
+      const docs=await listDocuments("enquiry_"+id,token);
+      for(const doc of (Array.isArray(docs)?docs:[])){
+        await deleteDocument(`enquiry_${id}/${doc.name}`,token);
+      }
+    }catch(e){}
+    await enquiryDelete(id,token);
+    await reload();
+  }
+
+  async function handleArchiveEnquiry(id){
+    const e=enquiries.find(x=>x.id===id);
+    if(!e) return;
+    if(!window.confirm(`Archive enquiry for "${e.name}"?\n\nTheir details and documents will be saved and can be restored at any time.`)) return;
+    // Move documents to archive folder
+    const srcFolder=`enquiry_${id}`;
+    const dstFolder=`enquiry_archive/${id}`;
+    try{
+      const docs=await listDocuments(srcFolder,token);
+      for(const doc of (Array.isArray(docs)?docs:[])){
+        await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+          method:"POST",
+          headers:{...BASE_H,Authorization:`Bearer ${token}`},
+          body:JSON.stringify({bucketId:"documents",sourceKey:`${srcFolder}/${doc.name}`,destinationKey:`${dstFolder}/${doc.name}`,destinationBucket:"documents"})
+        });
+        await deleteDocument(`${srcFolder}/${doc.name}`,token);
+        // Update document tags
+        await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(`${srcFolder}/${doc.name}`)}`,{
+          method:"PATCH",
+          headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Prefer:"return=minimal"},
+          body:JSON.stringify({file_path:`${dstFolder}/${doc.name}`})
+        });
+      }
+    }catch(e){}
+    await enquiryUpdate(id,{status:"archived"},token);
+    await reload();
+    setShowForm(false);
+  }
+
+  async function handleRestoreEnquiry(id){
+    // Move documents back from archive folder
+    const srcFolder=`enquiry_archive/${id}`;
+    const dstFolder=`enquiry_${id}`;
+    try{
+      const docs=await listDocuments(srcFolder,token);
+      for(const doc of (Array.isArray(docs)?docs:[])){
+        await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+          method:"POST",
+          headers:{...BASE_H,Authorization:`Bearer ${token}`},
+          body:JSON.stringify({bucketId:"documents",sourceKey:`${srcFolder}/${doc.name}`,destinationKey:`${dstFolder}/${doc.name}`,destinationBucket:"documents"})
+        });
+        await deleteDocument(`${srcFolder}/${doc.name}`,token);
+        await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(`${srcFolder}/${doc.name}`)}`,{
+          method:"PATCH",
+          headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Prefer:"return=minimal"},
+          body:JSON.stringify({file_path:`${dstFolder}/${doc.name}`})
+        });
+      }
+    }catch(e){}
+    await enquiryUpdate(id,{status:"waiting"},token);
+    await reload();
+  }
+
+  async function quickStatus(id,status){
+    await enquiryUpdate(id,{status},token);
+    setEnquiries(e=>e.map(x=>x.id===id?{...x,status}:x));
+  }
+
+  const filtered=enquiries.filter(e=>{
+    const ms=statusFilter==="all"?e.status!=="archived":e.status===statusFilter;
+    const mc=catFilter==="all"||e.category===catFilter;
+    return ms&&mc;
+  });
+
+  const waiting=enquiries.filter(e=>e.status==="waiting");
+  const contacted=enquiries.filter(e=>e.status==="contacted");
+
+  function daysSince(dateStr){
+    if(!dateStr) return null;
+    const days=Math.floor((Date.now()-new Date(dateStr).getTime())/86400000);
+    return days;
+  }
+
+  function urgencyColor(e){
+    const days=daysSince(e.enquiry_date);
+    if(days>60) return "#C0392B";
+    if(days>30) return "#E67E22";
+    return "var(--sub)";
+  }
+
+  return(
+    <div>
+      {/* Summary cards */}
+      <div className="kg" style={{gridTemplateColumns:"repeat(3,1fr)",marginBottom:20}}>
+        <div className="kc"><div className="kl">Waiting</div><div className="kv">{waiting.length}</div><div className="ks">Active enquiries</div><div className="ki">⏳</div></div>
+        <div className="kc"><div className="kl">Contacted</div><div className="kv">{contacted.length}</div><div className="ks">Awaiting response</div><div className="ki">📞</div></div>
+        <div className="kc"><div className="kl">Total Enquiries</div><div className="kv">{enquiries.length}</div><div className="ks">All time</div><div className="ki">📋</div></div>
+      </div>
+
+      {/* Filters and add button */}
+      <div className="fb mb20" style={{flexWrap:"wrap",gap:8}}>
+        <div className="fr" style={{flexWrap:"wrap",gap:6}}>
+          <button className={`btn btn-sm ${statusFilter==="all"?"btn-primary":"btn-outline"}`} onClick={()=>setStatusFilter("all")}>All</button>
+          {Object.entries(ENQUIRY_STATUSES).map(([k,v])=>(
+            <button key={k} className={`btn btn-sm ${statusFilter===k?"btn-primary":"btn-outline"}`} onClick={()=>setStatusFilter(k)}>{v}</button>
+          ))}
+        </div>
+        <div className="fr" style={{gap:6}}>
+          {["all","Storage","Residential","Commercial"].map(c=>(
+            <button key={c} className={`btn btn-sm ${catFilter===c?"btn-navy":"btn-outline"}`} onClick={()=>setCatFilter(c)}>{c==="all"?"All":c}</button>
+          ))}
+          <button className="btn btn-primary" onClick={openAdd}>+ Add Enquiry</button>
+        </div>
+      </div>
+
+      {loading&&<div className="loading">⏳ Loading…</div>}
+
+      {!loading&&filtered.length===0&&(
+        <div className="card"><div className="cb" style={{textAlign:"center",padding:40,color:"var(--sub)"}}>
+          <div style={{fontSize:36,marginBottom:10}}>📋</div>
+          <div style={{fontWeight:600,color:"var(--navy)"}}>No enquiries found</div>
+          <div style={{fontSize:13,marginTop:6}}>Click + Add Enquiry to record your first CRM entry.</div>
+        </div></div>
+      )}
+
+      {!loading&&filtered.length>0&&(
+        <div className="card">
+          <div className="tw"><table>
+            <thead><tr>
+              <th>Name</th><th>Contact</th><th>Category</th><th>Size Needed</th>
+              <th>Enquiry Date</th><th>Days Waiting</th><th>Status</th><th>Notes</th><th></th>
+            </tr></thead>
+            <tbody>{filtered.map(e=>(
+              <tr key={e.id}>
+                <td style={{fontWeight:600,color:"var(--navy)",whiteSpace:"nowrap"}}>{e.name}</td>
+                <td style={{fontSize:12}}>
+                  {e.email&&<div>{e.email}</div>}
+                  {e.phone&&<div style={{color:"var(--sub)"}}>{e.phone}</div>}
+                </td>
+                <td><span className="chip">{e.category}</span></td>
+                <td style={{fontSize:12}}>{e.size_needed||"—"}</td>
+                <td style={{fontSize:12,whiteSpace:"nowrap"}}>{e.enquiry_date?new Date(e.enquiry_date).toLocaleDateString("en-GB"):"—"}</td>
+                <td style={{fontWeight:600,color:urgencyColor(e)}}>
+                  {daysSince(e.enquiry_date)!=null?daysSince(e.enquiry_date)+" days":"—"}
+                  {e.status==="reserved"&&e.earmarked_unit&&(
+                    <div style={{fontSize:10,color:"#7A5C00",fontWeight:600,marginTop:2}}>🔒 {e.earmarked_unit}</div>
+                  )}
+                </td>
+                <td>
+                  <select value={e.status} onChange={ev=>quickStatus(e.id,ev.target.value)}
+                    style={{fontSize:11,padding:"3px 6px",borderRadius:5,border:"1px solid #C9D8E8",color:"var(--navy)"}}>
+                    {Object.entries(ENQUIRY_STATUSES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                  </select>
+                </td>
+                <td style={{fontSize:11,color:"var(--sub)",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.notes||"—"}</td>
+                <td>
+                  <div className="fr" style={{gap:4}}>
+                    <button className="btn btn-outline btn-sm" onClick={()=>openEdit(e)}>Edit</button>
+                    <button className="btn btn-outline btn-sm" onClick={()=>setViewDocsEnquiry(e)} title="View documents">📁</button>
+                    {(e.status==="waiting"||e.status==="contacted"||e.status==="reserved")&&(
+                      <button className="btn btn-success btn-sm" onClick={()=>{setConvertEnquiry(e);setConvertUnit(e.earmarked_unit||"");}}>🏠 Convert</button>
+                    )}
+                    {e.status==="archived"?(
+                      <button className="btn btn-success btn-sm" onClick={()=>handleRestoreEnquiry(e.id)}>↩️ Restore</button>
+                    ):(
+                      <button className="btn btn-outline btn-sm" style={{color:"#7B6F3A"}} onClick={()=>handleArchiveEnquiry(e.id)}>📦</button>
+                    )}
+                    <button className="btn btn-danger btn-sm" onClick={()=>handleDelete(e.id)}>🗑️</button>
+                  </div>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <div style={{padding:"8px 16px",fontSize:12,color:"var(--sub)",borderTop:"1px solid #E4EAF2"}}>{filtered.length} enquiries shown</div>
+        </div>
+      )}
+
+      {/* Enquiry Documents Modal */}
+      {viewDocsEnquiry&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setViewDocsEnquiry(null)}>
+          <div className="modal" style={{maxWidth:600}}>
+            <div className="mh">
+              <div className="mt">📁 Documents — {viewDocsEnquiry.name}</div>
+              <button className="mc" onClick={()=>setViewDocsEnquiry(null)}>✕</button>
+            </div>
+            <div style={{padding:"16px 22px"}}>
+              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token}/>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Convert to Tenant Modal */}
+      {convertEnquiry&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setConvertEnquiry(null)}>
+          <div className="modal" style={{maxWidth:480}}>
+            <div className="mh">
+              <div className="mt">Convert to Tenant — {convertEnquiry.name}</div>
+              <button className="mc" onClick={()=>setConvertEnquiry(null)}>✕</button>
+            </div>
+            <div style={{padding:"20px 22px"}}>
+              <div style={{fontSize:13,color:"var(--sub)",marginBottom:16}}>
+                {convertEnquiry.category} · {convertEnquiry.size_needed||"No size specified"} · {convertEnquiry.email||""} {convertEnquiry.phone?`· ${convertEnquiry.phone}`:""}
+              </div>
+              {(()=>{
+                const vacant=matchingVacantUnits(convertEnquiry);
+                if(vacant.length===0) return(
+                  <div style={{background:"#FFF8E1",border:"1.5px solid #FFD54F",borderRadius:8,padding:"14px",fontSize:13,color:"#7A5C00",marginBottom:16}}>
+                    ⚠️ No vacant {convertEnquiry.category} units available right now. Change a unit status to Available on the Site Plan first.
+                  </div>
+                );
+                return(
+                  <>
+                    <div style={{marginBottom:16}}>
+                      <label style={{fontSize:12,fontWeight:600,color:"var(--navy)",display:"block",marginBottom:8}}>Select unit to assign</label>
+                      <select value={convertUnit} onChange={e=>setConvertUnit(e.target.value)}
+                        style={{width:"100%",fontFamily:"var(--fb)",fontSize:13,padding:"9px 12px",border:"1.5px solid #D0DAE8",borderRadius:7,outline:"none"}}>
+                        <option value="">— Choose a vacant unit —</option>
+                        {vacant.map(u=>(
+                          <option key={u.id} value={u.id}>{u.label||u.id} {u.size?`· ${u.size}`:""} {u.row_name?`· ${u.row_name}`:""}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{background:"#EAF3DE",border:"1px solid #B5D98A",borderRadius:7,padding:"10px 14px",fontSize:12,color:"#3B6D11",marginBottom:16}}>
+                      ℹ️ This will set the tenant name, email, phone and status to New in the selected unit. You can complete the rest of their details from the Site Plan.
+                    </div>
+                  </>
+                );
+              })()}
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button className="btn btn-outline" onClick={()=>setConvertEnquiry(null)}>Cancel</button>
+                <button className="btn btn-success" onClick={handleConvert} disabled={!convertUnit}>✅ Convert to Tenant</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Modal */}
+      {showForm&&(
+        <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
+          <div className="modal">
+            <div className="mh">
+              <div className="mt">{editItem?"Edit Enquiry":"New Enquiry"}</div>
+              <button className="mc" onClick={()=>setShowForm(false)}>✕</button>
+            </div>
+            <div className="mb-m">
+              <div className="fg">
+                <div className="fgi full"><label>Name *</label><input value={form.name} onChange={u("name")} placeholder="Full name" autoFocus/></div>
+                <div className="fgi"><label>Email</label><input type="email" value={form.email} onChange={u("email")} placeholder="email@example.com"/></div>
+                <div className="fgi"><label>Phone</label><input value={form.phone} onChange={u("phone")} placeholder="07700 000000"/></div>
+                <div className="fgi"><label>Category</label>
+                  <select value={form.category} onChange={u("category")}>
+                    {["Storage","Residential","Commercial"].map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="fgi"><label>Size Needed</label><input value={form.size_needed} onChange={u("size_needed")} placeholder="e.g. Small, XL, 2-bed"/></div>
+                <div className="fgi"><label>Enquiry Date</label><input type="date" value={form.enquiry_date} onChange={u("enquiry_date")}/></div>
+                <div className="fgi"><label>Follow-up Date</label><input type="date" value={form.follow_up_date||""} onChange={u("follow_up_date")}/></div>
+                <div className="fgi"><label>Status</label>
+                  <select value={form.status} onChange={u("status")}>
+                    {Object.entries(ENQUIRY_STATUSES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                  </select>
+                </div>
+                {form.status==="reserved"&&(
+                    <div className="fgi full"><label>Earmarked Unit (optional)</label>
+                      <select value={form.earmarked_unit||""} onChange={u("earmarked_unit")}>
+                        <option value="">— Select a unit —</option>
+                        {(data||[]).filter(d=>d.status==="leaving"||d.status==="available"||d.status==="vacant"||!d.tenant)
+                          .sort((a,b)=>(a.id||"").localeCompare(b.id||""))
+                          .map(d=><option key={d.id} value={d.id}>{d.label||d.id}{d.tenant?` (${d.tenant})`:""} · {d.status||"vacant"}</option>)
+                        }
+                      </select>
+                    </div>
+                  )}
+                <div className="fgi full"><label>Notes</label><textarea value={form.notes} onChange={u("notes")} placeholder="Notes from conversations, preferences, special requirements…" style={{minHeight:80}}/></div>
+              </div>
+              {(editItem||form.id)&&(
+                <div style={{borderTop:"1px solid #E4EAF2",paddingTop:16,marginTop:4}}>
+                  <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📧 Email Correspondence</div>
+                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token}/>
+                </div>
+              )}
+            </div>
+            <div className="mf">
+              {editItem&&<button className="btn btn-outline" style={{color:"#7B6F3A"}} onClick={()=>handleArchiveEnquiry(editItem.id)}>📦 Archive</button>}
+              {editItem&&<button className="btn btn-danger" onClick={()=>{handleDelete(editItem.id);}}>Delete</button>}
+              <button className="btn btn-outline" onClick={()=>setShowForm(false)}>{(editItem||form.id)?"Close":"Cancel"}</button>
+              <button className="btn btn-primary" onClick={handleSave} disabled={saving||!form.name}>{saving?"Saving…":editItem?"Save":"Save & Continue"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ─── Super Admin Page ─────────────────────────────────────────────────────────
 function SuperAdminPage({ token, session, onImpersonate }) {
@@ -5418,314 +5068,77 @@ function DashboardPage({ session, org, data = [], enquiries = [], tasks = [], se
     const s = str.trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
       const [y, m, d] = s.split("-").map(Number);
-      return new Date(y, m - 1, d);
-    }
-    return null;
-  }
 
-  const reviewSoon = data.filter(u => {
-    if (u.category === "Storage") return false;
-    if (!u.review || !activeStatuses.includes(u.status)) return false;
-    const d = parseReviewDate(u.review);
-    return d && d >= today && d <= in60;
-  });
-
-  const activeEnquiries = enquiries.filter(e => ["waiting", "contacted", "reserved"].includes(e.status));
-  const reservedEnquiries = enquiries.filter(e => e.status === "reserved");
-  const vacantUnits = data.filter(u => u.status === "available" || u.status === "vacant" || (!u.status && !u.tenant && u.id));
-  const vacancyMatches = vacantUnits.map(u => {
-    const matches = activeEnquiries.filter(e => e.category === u.category);
-    return matches.length > 0 ? { unit: u, count: matches.length } : null;
-  }).filter(Boolean);
-
-  const enqByCategory = {
-    Storage: activeEnquiries.filter(e => e.category === "Storage").length,
-    Residential: activeEnquiries.filter(e => e.category === "Residential").length,
-    Commercial: activeEnquiries.filter(e => e.category === "Commercial").length,
-  };
-
-  function Alert({ color, bg, border, children }) {
-    return (
-      <div style={{ background: bg, border: `1.5px solid ${border}`, borderRadius: "var(--r)", padding: "12px 16px", marginBottom: 10, fontSize: 13, color }}>
-        {children}
-      </div>
-    );
-  }
-
-  return (
-    <div className="page">
-      <div className="mb-6">
-        <h1 style={{ fontFamily: "var(--fh)", fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
-        <p style={{ fontSize: 14, color: "var(--sub)" }}>{orgName}</p>
-      </div>
-
-      <div className="kpi-grid">
-        {[
-          { label: "Storage Units", value: stor.length || "—", meta: `${occ} occupied` },
-          { label: "Occupancy Rate", value: stor.length ? `${occRate}%` : "—", meta: `${stor.length - occ} vacant` },
-          { label: "Monthly Revenue", value: totalRent ? `£${totalRent.toLocaleString()}` : "—", meta: "All categories ex-VAT" },
-          { label: "Properties", value: res.length + com.length || "—", meta: `${res.length} residential, ${com.length} commercial` },
-        ].map(k => (
-          <div className="kpi-card" key={k.label}>
-            <div className="kpi-label">{k.label}</div>
-            <div className="kpi-value">{k.value}</div>
-            <div className="kpi-meta">{k.meta}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid-2" style={{ marginBottom: 20 }}>
-        <div className="card">
-          <div className="card-title">Getting started</div>
-          <div className="card-sub">Complete these steps to set up your site</div>
-          {[
-            { step: 1, label: "Business set up", done: true },
-            { step: 2, label: "Set up your site plan", done: stor.length > 0 },
-            { step: 3, label: "Add your first tenant", done: data.some(u => u.tenant) },
-            { step: 4, label: "Record a payment", done: false },
-          ].map(s => (
-            <div key={s.step} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-              <div style={{ width: 24, height: 24, borderRadius: "50%", background: s.done ? "var(--success)" : "var(--mist)", border: s.done ? "none" : "1.5px solid var(--mist2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, color: s.done ? "#fff" : "var(--sub)", flexShrink: 0 }}>
-                {s.done ? "✓" : s.step}
-              </div>
-              <span style={{ fontSize: 14, color: s.done ? "var(--sub)" : "var(--text)" }}>{s.label}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="card">
-          <div className="card-title">Waiting list</div>
-          <div className="card-sub">Active enquiries by category</div>
-          {Object.entries(enqByCategory).map(([cat, count]) => (
-            <div key={cat} style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: "var(--sub)" }}>{cat}</span>
-              <span style={{ fontWeight: 600 }}>{count}</span>
-            </div>
-          ))}
-          {reservedEnquiries.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, color: "var(--warning)", fontWeight: 600 }}>
-              <span>Reserved</span>
-              <span>{reservedEnquiries.length}</span>
-            </div>
-          )}
-          {activeEnquiries.length === 0 && <div style={{ fontSize: 13, color: "var(--sub)", paddingTop: 8 }}>No active enquiries</div>}
-          <button className="sp-btn" style={{ marginTop: 12, fontSize: 12 }} onClick={() => setPage("crm")}>View Enquiries →</button>
-        </div>
-      </div>
-
-      {/* Alerts */}
-      {tasksOverdue.length > 0 && (
-        <Alert color="#C0392B" bg="#FFF0EE" border="#FFCDD2">
-          <strong>🔧 Tasks overdue</strong> — {tasksOverdue.map(t => (
-            <span key={t.id} style={{ marginRight: 12 }}>{t.title}{t.due_date ? ` · ${new Date(t.due_date).toLocaleDateString("en-GB")}` : ""}</span>
-          ))}
-          <span style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 600, marginLeft: 8 }} onClick={() => setPage("tasks")}>View Tasks →</span>
-        </Alert>
-      )}
-      {tasksDue.filter(t => !tasksOverdue.includes(t)).length > 0 && (
-        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
-          <strong>🔧 Tasks due soon</strong> — {tasksDue.filter(t => !tasksOverdue.includes(t)).map(t => (
-            <span key={t.id} style={{ marginRight: 12 }}>{t.title}{t.due_date ? ` · ${new Date(t.due_date).toLocaleDateString("en-GB")}` : ""}</span>
-          ))}
-        </Alert>
-      )}
-      {arrears.length > 0 && (
-        <Alert color="#C0392B" bg="#FFF0EE" border="#FFCDD2">
-          <strong>⚠️ In arrears</strong> — {arrears.map(u => (
-            <span key={u.id} style={{ marginRight: 12 }}>{u.tenant || u.id}{u.rent ? ` · £${u.rent}/mo` : ""}</span>
-          ))}
-        </Alert>
-      )}
-
-      {leaving.length > 0 && (
-        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
-          <strong>🚪 Leaving</strong> — {leaving.map(u => (
-            <span key={u.id} style={{ marginRight: 12 }}>{u.tenant || u.id}{u.move_out_date ? ` · ${new Date(u.move_out_date).toLocaleDateString("en-GB")}` : ""}</span>
-          ))}
-        </Alert>
-      )}
-
-      {vacancyMatches.length > 0 && (
-        <Alert color="#1A7F5A" bg="#EDF7F2" border="#A8DEC2">
-          <strong>🟢 Vacancy match</strong> — {vacancyMatches.length} vacant unit{vacancyMatches.length !== 1 ? "s" : ""} with waiting enquiries in the same category.{" "}
-          <span style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 600 }} onClick={() => setPage("crm")}>View CRM →</span>
-        </Alert>
-      )}
-
-      {reservedEnquiries.length > 0 && (
-        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
-          <strong>🔒 Reserved</strong> — {reservedEnquiries.map(e => (
-            <span key={e.id} style={{ marginRight: 12 }}>
-              {e.name}{e.earmarked_unit ? ` → Unit ${e.earmarked_unit}` : ""}
-            </span>
-          ))}
-        </Alert>
-      )}
-
-      {reviewSoon.length > 0 && (
-        <Alert color="#7A5C00" bg="#FFF8E6" border="#F5E0A0">
-          <strong>📅 Lease review due</strong> — {reviewSoon.map(u => (
-            <span key={u.id} style={{ marginRight: 12 }}>
-              {u.label || u.id} ({u.review})
-            </span>
-          ))}
-        </Alert>
-      )}
-    </div>
-  );
-}
-
-// ─── Sidebar ──────────────────────────────────────────────────────────────
-const NAV = [
-  { id: "dashboard", label: "Dashboard",  icon: "dashboard", section: null },
-  { id: "siteplan",  label: "Site Plan",  icon: "siteplan",  section: "Manage" },
-  { id: "tenants",   label: "Tenants",    icon: "tenants",   section: null },
-  { id: "payments",  label: "Payments",   icon: "payments",  section: null },
-  { id: "crm",       label: "Enquiries",  icon: "crm",       section: null },
-  { id: "calendar",  label: "Calendar",   icon: "calendar",  section: null },
-  { id: "tasks",     label: "Tasks",      icon: "tasks",     section: null },
-  { id: "documents", label: "Documents",  icon: "documents", section: "Data" },
-  { id: "datatools", label: "Data Tools",  icon: "settings",  section: null },
-  { id: "archive",   label: "Archive",    icon: "archive",   section: null },
-  { id: "users",     label: "Users",      icon: "users",     section: "Admin" },
-  { id: "settings",  label: "Settings",   icon: "settings",  section: null },
+// ─── App Shell ────────────────────────────────────────────────────────────────
+const NAV=[
+  {section:"Overview"},{id:"dashboard",label:"Dashboard",icon:"📊"},
+  {section:"Property"},{id:"site",label:"Site Plan",icon:"🗺️"},{id:"tenants",label:"All Tenants",icon:"👥"},{id:"enquiries",label:"Enquiries",icon:"📋"},
+  {section:"Finance"},{id:"payments",label:"Payments",icon:"🧾"},{id:"calendar",label:"Calendar",icon:"📅"},
+  {section:"Operations"},{id:"tasks",label:"Tasks & Jobs",icon:"🔧"},
+  {section:"Data"},{id:"documents",label:"Documents",icon:"📁"},{id:"tools",label:"Import / Export",icon:"📂"},
+  {section:"Admin"},{id:"archive",label:"Archive",icon:"📦"},{id:"users",label:"Users & Security",icon:"🔐"},
 ];
+const TITLES={dashboard:"Dashboard",site:"Site Plan",tenants:"All Tenants",enquiries:"Enquiries",payments:"Payments",calendar:"Calendar",tasks:"Tasks & Jobs",documents:"Documents",tools:"Import / Export",archive:"Archive",users:"Users & Security"};
 
-function Sidebar({ page, setPage, session, org, onSignOut, open, onClose, impersonating, onStopImpersonating }) {
-  const email = session?.user?.email || "";
-  const initials = email ? email.slice(0, 2).toUpperCase() : "??";
-  let lastSection = null;
-
-  return (
-    <>
-      <div className={`backdrop ${open ? "open" : ""}`} onClick={onClose} />
-      <div className={`sidebar ${open ? "open" : ""}`}>
-        <div className="sidebar-logo">
-          <div className="sidebar-wordmark">cerect<span>.</span></div>
-          <div className="sidebar-tagline">{org?.name || "Storage Management"}</div>
-        </div>
-
-        <nav className="sidebar-nav">
-          {NAV.map(item => {
-            const showSection = item.section && item.section !== lastSection;
-            if (item.section) lastSection = item.section;
-            return (
-              <div key={item.id}>
-                {showSection && <div className="nav-section">{item.section}</div>}
-                <button
-                  className={`nav-item ${page === item.id ? "active" : ""}`}
-                  onClick={() => { setPage(item.id); onClose(); }}
-                >
-                  <span className="nav-icon">{Icon[item.icon]}</span>
-                  {item.label}
-                </button>
-              </div>
-            );
-          })}
-          {email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && (
-            <>
-              <div className="nav-section">Platform</div>
-              <button
-                className={`nav-item ${page === "superadmin" ? "active" : ""}`}
-                onClick={() => { setPage("superadmin"); onClose(); }}
-              >
-                <span className="nav-icon">⚙️</span>
-                Super Admin
-              </button>
-            </>
-          )}
-        </nav>
-
-        <div className="sidebar-bottom">
-          {impersonating && (
-            <button onClick={onStopImpersonating} style={{ width: "100%", background: "#7B3FA0", color: "#fff", border: "none", borderRadius: 8, padding: "10px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer", marginBottom: 8, textAlign: "left" }}>
-              ✕ Exit — back to my account
-            </button>
-          )}
-          <div className="user-chip">
-            <div className="user-avatar">{initials}</div>
-            <div className="user-email">{email}</div>
-            <button className="signout-btn" onClick={onSignOut} title="Sign out">
-              <span style={{ width: 16, height: 16, display: "block" }}>{Icon.signout}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── App ──────────────────────────────────────────────────────────────────
-export default function App() {
-  const [session, setSession] = useState(null);
+export default function App(){
+  const [session,setSession]=useState(()=>{
+    try{const s=localStorage.getItem("cerect_session");return s?JSON.parse(s):null;}catch{return null;}
+  });
   const [org, setOrg] = useState(null);
   const [orgLoading, setOrgLoading] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
-  const [page, setPage] = useState("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [data, setData] = useState([]);
-  const [areas, setAreas] = useState([]);
-  const [enquiries, setEnquiries] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [dataLoading, setDataLoading] = useState(false);
-  const [editItem, setEditItem] = useState(null);
-  const [isNew, setIsNew] = useState(false);
-  const { toasts, toast } = useToast();
-  const refreshRef = useRef(null);
+  const [impersonating, setImpersonating] = useState(null);
+  const [page,setPage]=useState("dashboard");
+  const [mobileNav,setMobileNav]=useState(false);
+  useEffect(()=>{ window.__camSetPage=setPage; return()=>{ delete window.__camSetPage; }; },[setPage]);
+  const [globalSearch,setGlobalSearch]=useState("");
+  const [showGlobalSearch,setShowGlobalSearch]=useState(false);
+  const [data,setData]=useState([]);
+  const [areas,setAreas]=useState([]);
+  const [enquiries,setEnquiries]=useState([]);
+  const [tasks,setTasks]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [editItem,setEditItem]=useState(null);
+  const [isNew,setIsNew]=useState(false);
+  const [toast,setToast]=useState(null);
+  const [offline,setOffline]=useState(false);
 
-  const [impersonating, setImpersonating] = useState(null); // { org, prevOrg, prevData, prevAreas, prevEnquiries, prevTasks }
-
-  const token = session?.access_token;
+  const token=session?.access_token;
   const orgId = impersonating ? impersonating.org.id : org?.id;
   const activeOrg = impersonating ? impersonating.org : org;
-
-  const [offline, setOffline] = useState(false);
-  const [offlineToast, setOfflineToast] = useState(false);
-  const [globalSearch, setGlobalSearch] = useState("");
-  const [showGlobalSearch, setShowGlobalSearch] = useState(false);
-
-  // Restore session
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("cerect_session");
-      if (raw) {
-        const s = JSON.parse(raw);
-        if (s?.access_token) setSession(s);
-      }
-    } catch {}
-  }, []);
+  const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),3200);};
 
   // Offline detection
-  useEffect(() => {
-    let offlineTimer = null;
-    const onOnline = () => {
-      clearTimeout(offlineTimer);
-      setOffline(false);
-      setOfflineToast(true);
-      setTimeout(() => setOfflineToast(false), 3000);
-    };
-    const onOffline = () => {
-      // Debounce — only show after 3 seconds of being offline to avoid false positives
-      offlineTimer = setTimeout(() => setOffline(true), 3000);
-    };
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      clearTimeout(offlineTimer);
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
+  useEffect(()=>{
+    const on=()=>{setOffline(false);showToast("✅ Back online");};
+    const off=()=>setOffline(true);
+    window.addEventListener("online",on);
+    window.addEventListener("offline",off);
+    return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};
+  },[]);
 
-  // Escape key closes modal, Ctrl+K opens global search
-  useEffect(() => {
-    const handler = e => {
-      if (e.key === "Escape") { setEditItem(null); setShowGlobalSearch(false); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); setShowGlobalSearch(s => !s); }
+  // Escape key closes edit modal; Ctrl+K opens global search
+  useEffect(()=>{
+    const handler=e=>{
+      if(e.key==="Escape"&&editItem){setEditItem(null);}
+      if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();setShowGlobalSearch(s=>!s);}
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+    window.addEventListener("keydown",handler);
+    return()=>window.removeEventListener("keydown",handler);
+  },[editItem]);
+
+  function handleLogin(sess){
+    setSession(sess);
+    try{localStorage.setItem("cerect_session",JSON.stringify(sess));}catch{}
+    if(sess?.access_token && sess?.user?.email){
+      loginLogRecord(sess.user.email, sess.access_token).catch(()=>{});
+    }
+  }
+
+  function applySession(sess){
+    setSession(sess);
+    try{localStorage.setItem("cerect_session",JSON.stringify(sess));}catch{}
+  }
 
   // Load org whenever session changes
   useEffect(() => {
@@ -5740,106 +5153,27 @@ export default function App() {
         setNeedsOnboarding(true);
       }
       setOrgLoading(false);
-    });
-  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Load data whenever org is ready
-  const loadData = useCallback(async () => {
-    if (!token || !orgId) return;
-    setDataLoading(true);
-    try {
-      const [rows, areaRows, enqRows, taskRows] = await Promise.all([dbGet(orgId, token), areasGet(orgId, token), enquiryList(orgId, token), taskList(orgId, token).catch(() => [])]);
-      setData(Array.isArray(rows) ? rows : []);
-      setEnquiries(Array.isArray(enqRows) ? enqRows : []);
-      setTasks(Array.isArray(taskRows) ? taskRows : []);
-      if (Array.isArray(areaRows)) {
-        setAreas(areaRows);
-        // Auto-populate areas from existing tenants if areas table is empty
-        if (areaRows.length === 0 && Array.isArray(rows) && rows.length > 0) {
-          const storageRows = [...new Set(rows.filter(d => d.category === "Storage" && d.row_name).map(d => d.row_name))];
-          for (let i = 0; i < storageRows.length; i++) {
-            await areasUpsert(storageRows[i], "Storage", i, orgId, token);
-          }
-          const fresh = await areasGet(orgId, token);
-          setAreas(fresh || []);
-        }
-      }
-    } catch (e) {
-      if (e?.message === "SESSION_EXPIRED") {
-        toast("Your session has expired — please sign in again", "error");
-        handleSignOut();
-      }
-    }
-    setDataLoading(false);
-  }, [token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => { loadData(); }, [loadData]);
-
-  // Refresh on tab focus (catches long backgrounded sessions)
-  useEffect(() => {
-    async function handleVisibility() {
-      if (document.visibilityState !== "visible") return;
-      if (!session?.refresh_token) return;
-      try {
-        const fresh = await refreshSession(session.refresh_token);
-        if (fresh?.access_token) {
-          setSession(fresh);
-          localStorage.setItem("cerect_session", JSON.stringify(fresh));
-        }
-      } catch {}
-    }
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, [session?.refresh_token]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-refresh session every 50 minutes
-  useEffect(() => {
-    if (!session) return;
-    refreshRef.current = setInterval(async () => {
-      const fresh = await refreshSession(session.refresh_token);
-      if (fresh) {
-        setSession(fresh);
-        localStorage.setItem("cerect_session", JSON.stringify(fresh));
-      } else {
-        handleSignOut();
-      }
-    }, 50 * 60 * 1000);
-    return () => clearInterval(refreshRef.current);
-  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Escape key closes modal
-  useEffect(() => {
-    const handler = e => { if (e.key === "Escape" && editItem) setEditItem(null); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [editItem]);
-
-  function handleLogin(s) {
-    setSession(s);
-    localStorage.setItem("cerect_session", JSON.stringify(s));
-    toast("Signed in successfully", "success");
-  }
+    }).catch(() => setOrgLoading(false));
+  }, [session?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleImpersonate(targetOrg) {
-    // Save current state
-    setImpersonating({ org: targetOrg, prevOrg: org, prevData: data, prevAreas: areas, prevEnquiries: enquiries, prevTasks: tasks });
-    // Load target org's data
-    setDataLoading(true);
+    setImpersonating({ org: targetOrg, prevData: data, prevAreas: areas, prevEnquiries: enquiries, prevTasks: tasks });
+    setLoading(true);
     try {
       const [rows, areaRows, enqRows, taskRows] = await Promise.all([
-        dbGet(targetOrg.id, token),
-        areasGet(targetOrg.id, token),
-        enquiryList(targetOrg.id, token),
-        taskList(targetOrg.id, token).catch(() => []),
+        dbGet(token, targetOrg.id),
+        areasGet(token, targetOrg.id),
+        enquiryList(token, targetOrg.id),
+        taskList(token, targetOrg.id).catch(() => []),
       ]);
       setData(Array.isArray(rows) ? rows : []);
       setAreas(Array.isArray(areaRows) ? areaRows : []);
       setEnquiries(Array.isArray(enqRows) ? enqRows : []);
       setTasks(Array.isArray(taskRows) ? taskRows : []);
     } catch {}
-    setDataLoading(false);
+    setLoading(false);
     setPage("dashboard");
-    toast(`Viewing as ${targetOrg.name}`, "success");
+    showToast(`👁 Viewing as ${targetOrg.name}`);
   }
 
   function handleStopImpersonating() {
@@ -5850,436 +5184,703 @@ export default function App() {
     setTasks(impersonating.prevTasks);
     setImpersonating(null);
     setPage("superadmin");
-    toast("Back to your account", "success");
+    showToast("✅ Back to your account");
   }
 
-  async function handleSignOut() {
-    if (session?.access_token) {
-      try { await signOut(session.access_token); } catch {}
-    }
+  async function handleSignOut(){
+    try{await signOut(token);}catch{}
     setSession(null);
     setOrg(null);
-    setData([]);
-    setAreas([]);
     setNeedsOnboarding(false);
-    localStorage.removeItem("cerect_session");
-    setPage("dashboard");
+    setImpersonating(null);
+    setData([]); setAreas([]); setEnquiries([]); setTasks([]);
+    try{localStorage.removeItem("cerect_session");}catch{}
   }
 
-  function handleOnboardingComplete(newOrg) {
-    setOrg(newOrg);
-    setNeedsOnboarding(false);
-    toast("Welcome to Cerect! Your account is ready.", "success");
-  }
+  // Proactively refresh the access token every 50 minutes so the user is
+  // never silently logged out mid-work (Supabase tokens expire after 1 hour)
+  useEffect(()=>{
+    if(!session?.refresh_token) return;
+    const interval=setInterval(async()=>{
+      try{
+        const fresh=await refreshSession(session.refresh_token);
+        if(fresh?.access_token) applySession(fresh);
+      }catch{}
+    }, 50*60*1000); // 50 minutes
+    return ()=>clearInterval(interval);
+  },[session?.refresh_token]);
 
-  async function handleArchive(id) {
-    try {
-      const unit = data.find(u => u.id === id);
-      if (!unit) return;
+  // Also refresh immediately on page visibility restore (tab comes back into focus
+  // after being backgrounded for a long time — the most common logout trigger)
+  useEffect(()=>{
+    async function handleVisibility(){
+      if(document.visibilityState!=="visible") return;
+      if(!session?.refresh_token) return;
+      try{
+        const fresh=await refreshSession(session.refresh_token);
+        if(fresh?.access_token) applySession(fresh);
+      }catch{}
+    }
+    document.addEventListener("visibilitychange",handleVisibility);
+    return ()=>document.removeEventListener("visibilitychange",handleVisibility);
+  },[session?.refresh_token]);
 
-      // Save full tenant record to archived_tenants
-      const archiveR = await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants`, {
-        method: "POST",
-        headers: { ...authH(token), Prefer: "return=representation" },
-        body: JSON.stringify({ org_id: orgId, original_unit_id: String(id), tenant_data: unit }),
-      });
-      const archiveRows = await archiveR.json();
-      const archiveRecord = Array.isArray(archiveRows) ? archiveRows[0] : archiveRows;
-
-      // Move documents to archive folder if we got an archive ID
-      if (archiveRecord?.id) {
-        const safeId = String(id).replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
-        try {
-          const docsR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
-            method: "POST",
-            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ prefix: safeId + "/", limit: 200 }),
-          });
-          const docs = await docsR.json();
-          for (const doc of (Array.isArray(docs) ? docs : []).filter(d => d.id)) {
-            const srcPath = `${safeId}/${doc.name}`;
-            const dstPath = `archive/${archiveRecord.id}/${doc.name}`;
-            await fetch(`${SUPABASE_URL}/storage/v1/object/copy`, {
-              method: "POST",
-              headers: { ...BASE_H, Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ bucketId: "documents", sourceKey: srcPath, destinationKey: dstPath, destinationBucket: "documents" }),
-            });
-            // Update document tag paths
-            await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(srcPath)}&org_id=eq.${orgId}`, {
-              method: "PATCH",
-              headers: { ...authH(token), Prefer: "return=minimal" },
-              body: JSON.stringify({ file_path: dstPath }),
-            });
-            await fetch(`${SUPABASE_URL}/storage/v1/object/documents/${srcPath}`, {
-              method: "DELETE",
-              headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}` },
-            });
+  const loadData=useCallback(async()=>{
+    if(!token || !orgId){setLoading(false);return;}
+    try{
+      const [rows, areaRows, enqRows, taskRows]=await Promise.all([
+        dbGet(token, orgId),
+        areasGet(token, orgId),
+        enquiryList(token, orgId),
+        taskList(token, orgId).catch(()=>[])
+      ]);
+      setData(Array.isArray(rows) ? rows : []);
+      setEnquiries(Array.isArray(enqRows)?enqRows:[]);
+      setTasks(Array.isArray(taskRows)?taskRows:[]);
+      if(areaRows&&Array.isArray(areaRows)){
+        setAreas(areaRows);
+        if(areaRows.length===0&&rows&&rows.length>0){
+          const storageRows=[...new Set(rows.filter(d=>d.category==="Storage"&&d.row_name).map(d=>d.row_name))];
+          for(let i=0;i<storageRows.length;i++){
+            await areasUpsert(storageRows[i],"Storage",i,token,orgId);
           }
-        } catch {}
-      }
-
-      // Clear tenant from unit but keep the unit as Available
-      await dbUpsert({
-        ...unit,
-        org_id: orgId,
-        tenant: null, email: null, phone: null, address: null,
-        payment: null, rent: null, vat_rent: null,
-        status: "available", move_in_date: null, move_out_date: null,
-        lock_deposit_paid: null, lock_deposit_amount: null,
-        tenant_deposit: null, key_number: null, notes: null, review: null,
-      }, token);
-
-      const fresh = await dbGet(orgId, token);
-      setData(Array.isArray(fresh) ? fresh : []);
-      toast(`${unit.tenant || unit.id} archived — unit is now available`, "success");
-    } catch (e) { toast("Archive failed: " + e.message, "error"); }
-  }
-
-  async function handleStatusUpdate(id, newStatus) {
-    try {
-      const unit = data.find(u => u.id === id);
-      if (!unit) return;
-      await dbUpsert({ ...unit, org_id: orgId, status: newStatus }, token);
-      setData(d => d.map(u => u.id === id ? { ...u, status: newStatus } : u));
-    } catch { toast("Status update failed", "error"); }
-  }
-
-  // ── Site Plan handlers ────────────────────────────────────────────────────
-  async function handleSave(form) {
-    try {
-      let row = { ...form, org_id: orgId };
-      // Generate ID from label for Residential/Commercial if missing
-      if (!row.id && row.label) {
-        row.id = row.label.trim().replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 40);
-      }
-      if (!row.id) {
-        toast("Please enter a property name or unit ID before saving", "error");
-        return;
-      }
-      // Remove empty strings that would conflict with DB constraints
-      Object.keys(row).forEach(k => { if (row[k] === "") row[k] = null; });
-      row.id = String(row.id).trim();
-      const result = await dbUpsert(row, token);
-      if (!Array.isArray(result) && result?.code) {
-        toast(`Save failed: ${result.message || result.code}`, "error");
-        return;
-      }
-      const fresh = await dbGet(orgId, token);
-      setData(Array.isArray(fresh) ? fresh : []);
-      toast("Saved", "success");
-    } catch (e) { toast("Save failed: " + e.message, "error"); }
-  }
-
-  async function handleDelete(id) {
-    try {
-      await dbDelete(id, orgId, token);
-      setData(d => d.filter(u => u.id !== id));
-      toast("Unit deleted", "success");
-    } catch { toast("Delete failed", "error"); }
-  }
-
-  async function handleAddUnit(unit) {
-    try {
-      const row = { ...unit, org_id: orgId };
-      await dbUpsert(row, token);
-      setData(d => [...d, row]);
-      if (unit.row_name) {
-        const exists = areas.some(a => a.name === unit.row_name);
-        if (!exists) {
-          await areasUpsert(unit.row_name, "Storage", areas.length, orgId, token);
-          const fresh = await areasGet(orgId, token);
-          setAreas(fresh || []);
+          const fresh=await areasGet(token,orgId);
+          setAreas(fresh||[]);
         }
       }
-      toast("Unit added", "success");
-    } catch { toast("Could not add unit — check the ID is unique", "error"); }
-  }
-
-  async function handleRenameRow(oldName, newName) {
-    try {
-      const units = data.filter(u => u.row_name === oldName);
-      for (const u of units) { await dbUpsert({ ...u, row_name: newName, org_id: orgId }, token); }
-      setData(d => d.map(u => u.row_name === oldName ? { ...u, row_name: newName } : u));
-      const area = areas.find(a => a.name === oldName);
-      if (area) {
-        await areasDelete(oldName, orgId, token);
-        await areasUpsert(newName, "Storage", area.sort_order, orgId, token);
-        const fresh = await areasGet(orgId, token);
-        setAreas(fresh || []);
+    }catch(e){
+      setData([]);
+      if(e?.message==="SESSION_EXPIRED"){
+        if(session?.refresh_token){
+          try{
+            const fresh=await refreshSession(session.refresh_token);
+            if(fresh?.access_token){applySession(fresh);return;}
+          }catch{}
+        }
+        showToast("⚠️ Your session has expired — please sign in again");
+        setSession(null);
+        try{localStorage.removeItem("cerect_session");}catch{}
       }
-      toast(`Renamed "${oldName}" to "${newName}"`, "success");
-    } catch { toast("Rename failed", "error"); }
-  }
+    }
+    setLoading(false);
+  },[token, orgId, session]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function handleDeleteRow(rowName) {
-    try {
-      const units = data.filter(u => u.row_name === rowName);
-      for (const u of units) { await dbDelete(u.id, orgId, token); }
-      setData(d => d.filter(u => u.row_name !== rowName));
-      await areasDelete(rowName, orgId, token);
-      const fresh = await areasGet(orgId, token);
-      setAreas(fresh || []);
-      toast(`Deleted area "${rowName}"`, "success");
-    } catch { toast("Delete failed", "error"); }
-  }
+  useEffect(()=>{
+    if(token && orgId) loadData();
+    else if(!token) setLoading(false);
+  },[token, orgId, loadData]);
 
-  async function handleSaveAreaOrder(names) {
-    try {
-      await areasUpdateOrder(names, orgId, token);
-      const fresh = await areasGet(orgId, token);
-      setAreas(fresh || []);
-    } catch { toast("Could not reorder areas", "error"); }
+  async function handleSave(row){
+    try{
+      const clean={...row,
+        rent:row.rent?Number(row.rent):null,
+        vat_rent:row.vat_rent?Number(row.vat_rent):null,
+        lock_deposit_amount:row.lock_deposit_amount?Number(row.lock_deposit_amount):null,
+        tenant_deposit:row.tenant_deposit?Number(row.tenant_deposit):null,
+      };
+      await dbUpsert(clean,token);
+      setData(d=>d.map(r=>r.id===clean.id?clean:r));
+      showToast("✅ Saved");
+    }
+    catch{showToast("❌ Save failed");}
   }
-
-  async function handleAddArea(name) {
-    try {
-      await areasUpsert(name, "Storage", areas.length, orgId, token);
-      const fresh = await areasGet(orgId, token);
-      setAreas(fresh || []);
-      toast(`Area "${name}" created`, "success");
-    } catch { toast("Could not create area", "error"); }
+  async function handleSaveNew(row){
+    try{await dbUpsert(row,token);setData(d=>[...d,row]);showToast("✅ Added");}
+    catch{showToast("❌ Could not save — check Unit ID is unique");}
   }
+  async function handleDelete(id){
+    const unit=data.find(r=>r.id===id);
+    if(!unit) return;
+    const name=unit.tenant||unit.label||("Unit "+unit.id);
+    const isStorage=unit.category==="Storage";
 
-  async function handleSaveUnitOrder(updates) {
-    try {
-      for (const u of updates) {
-        await dbUpsert({ ...data.find(d => d.id === u.id), ...u, org_id: orgId }, token);
+    if(isStorage&&unit.tenant){
+      // Check if there are documents
+      const safeId=(unit.id||"").replace(/[^a-zA-Z0-9._-]/g,"_");
+      const docs=await listDocuments(safeId,token);
+      const hasDocs=Array.isArray(docs)&&docs.length>0;
+      if(hasDocs){
+        alert(`⚠️ Unit ${unit.id} has ${docs.length} document${docs.length!==1?"s":""} associated with ${name}.\n\nPlease use "📦 Archive" instead of Delete — this will safely save the tenant's details AND documents together so you can retrieve them later.`);
+        return;
       }
-      const fresh = await dbGet(orgId, token);
-      setData(Array.isArray(fresh) ? fresh : []);
-    } catch { toast("Could not reorder units", "error"); }
+      if(!window.confirm(`Remove tenant "${name}" from Unit ${unit.id}?\n\nTip: Use "📦 Archive" instead to keep their details for your records.\n\nClick OK to remove and mark unit as Available.`)) return;
+    } else if(isStorage){
+      // Empty unit — delete it entirely
+      try{
+        await dbDelete(unit.id,token);
+        setData(d=>d.filter(r=>r.id!==id));
+        showToast(`🗑️ Unit ${unit.id} deleted`);
+      }catch{showToast("❌ Delete failed");}
+      return;
+    } else {
+      // Check for documents before allowing delete
+      const safeUnitId=(unit.id||"").replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,"_");
+      const docs=await listDocuments(safeUnitId,token);
+      const hasDocs=Array.isArray(docs)&&docs.length>0;
+      if(hasDocs){
+        alert(`⚠️ "${name}" has ${docs.length} document${docs.length!==1?"s":""} associated with it.\n\nPlease use "📦 Archive" instead of Delete — this will safely save the details AND documents so you can retrieve them later.`);
+        return;
+      }
+      if(!window.confirm(`Move "${name}" to Recently Deleted?\n\nThey can be restored from the Archive page within 30 days.`)) return;
+    }
+
+    try{
+      if(isStorage){
+        // Save tenant to archived_tenants then clear the unit
+        await archiveSave(unit.id, unit, token, orgId);
+        const cleared={...unit,tenant:null,email:null,phone:null,payment:null,
+          rent:null,vat_rent:null,status:"available",notes:null,
+          lock_deposit_paid:null,lock_deposit_amount:null,tenant_deposit:null,key_number:null,address:null,
+          deleted_at:null,deleted_data:null};
+        await dbUpsert(cleared,token);
+        setData(d=>d.map(r=>r.id===id?cleared:r));
+        showToast(`🗑️ "${name}" saved to Archive — unit marked as Available`);
+      } else {
+        // Residential/Commercial — soft delete to Recently Deleted
+        const deleted={...unit,archived:false,deleted_at:new Date().toISOString(),deleted_data:JSON.stringify(unit)};
+        await dbUpsert(deleted,token);
+        setData(d=>d.filter(r=>r.id!==id));
+        showToast("🗑️ Moved to Recently Deleted");
+      }
+    }
+    catch{showToast("❌ Delete failed");}
   }
 
-  const pageTitle = NAV.find(n => n.id === page)?.label || "Dashboard";
+  async function handleArchive(id){
+    const unit=data.find(r=>r.id===id);
+    if(!unit) return;
+    const name=unit.tenant||unit.label||("Unit "+unit.id);
+    const isStorage=unit.category==="Storage";
+    if(isStorage&&!unit.tenant){showToast("⚠️ No tenant to archive — unit is already vacant");return;}
+    // Check if already archived
+    const existing=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?original_unit_id=eq.${encodeURIComponent(id)}&order=archived_at.desc`,{headers:authH(token)});
+    const existingData=await existing.json();
+    if(Array.isArray(existingData)&&existingData.length>0){
+      const date=new Date(existingData[0].archived_at).toLocaleDateString("en-GB");
+      if(!window.confirm(`⚠️ There is already an archived record for Unit ${id} from ${date}.\n\nArchiving again will create a second record. Continue?`)) return;
+    }
+    const confirmMsg=isStorage
+      ? `Archive "${name}"?\n\nTheir details and documents will be saved in the Archive. The unit will remain on the site plan as Available.`
+      : `Archive "${name}"?\n\nTheir details and documents will be saved in the Archive and can be restored at any time.`;
+    if(!window.confirm(confirmMsg)) return;
+    try{
+      const safeData={
+        id:unit.id,label:unit.label,tenant:unit.tenant,email:unit.email,
+        phone:unit.phone,payment:unit.payment,rent:unit.rent,vat_rent:unit.vat_rent,
+        status:unit.status,category:unit.category,row_name:unit.row_name,
+        box_no:unit.box_no,size:unit.size,section:unit.section,review:unit.review,
+        notes:unit.notes,address:unit.address,lock_deposit_paid:unit.lock_deposit_paid,
+        lock_deposit_amount:unit.lock_deposit_amount,tenant_deposit:unit.tenant_deposit,
+        key_number:unit.key_number,
+        move_in_date:unit.move_in_date
+      };
+      const saved=await archiveSave(unit.id, safeData, token, orgId);
+      if(!saved||saved.error||saved.code){
+        throw new Error(saved?.message||saved?.error||"Archive save failed");
+      }
+      const archiveRecord=Array.isArray(saved)?saved[0]:saved;
+      const archiveId=archiveRecord?.id;
 
-  function renderPage() {
-    switch (page) {
-      case "dashboard": return <DashboardPage session={session} org={activeOrg} data={data} enquiries={enquiries} tasks={tasks} setPage={setPage} />;
-      case "payments": return (
-        <PaymentsPage
-          data={data}
-          orgId={orgId}
-          token={token}
-          toast={toast}
-          onStatusUpdate={handleStatusUpdate}
-        />
-      );
-      case "tenants": return (
-        <TenantsPage
-          data={data}
-          onEdit={r => { setEditItem(r); setIsNew(false); }}
-          onAdd={cat => { setEditItem({ id: "", label: "", tenant: "", email: "", phone: "", payment: "Monthly DD", rent: null, vat_rent: null, status: "occupied", category: cat || "Residential", row_name: null, box_no: null, size: null, review: "", notes: "", address: "" }); setIsNew(true); }}
-          onArchive={handleArchive}
-          setPage={setPage}
-        />
-      );
-      case "calendar": return (
-        <CalendarPage data={data} enquiries={enquiries} tasks={tasks} />
-      );
-      case "tasks": return (
-        <TasksPage orgId={orgId} token={token} toast={toast} data={data} />
-      );
-      case "datatools": return (
-        <DataToolsPage data={data} orgId={orgId} token={token} toast={toast} />
-      );
-      case "documents": return (
-        <DocumentsPage
-          data={data}
-          orgId={orgId}
-          token={token}
-          toast={toast}
-        />
-      );
-      case "superadmin": return (
-        <SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate} />
-      );
-      case "users": return (
-        <UsersPage
-          token={token}
-          session={session}
-          toast={toast}
-          orgId={orgId}
-        />
-      );
-      case "archive": return (
-        <ArchivePage
-          orgId={orgId}
-          token={token}
-          data={data}
-          toast={toast}
-          onDataRefresh={loadData}
-        />
-      );
-      case "crm": return (
-        <EnquiriesPage
-          orgId={orgId}
-          token={token}
-          data={data}
-          toast={toast}
-        />
-      );
-      case "siteplan": return (
-        <SitePlanPage
-          data={data}
-          areas={areas}
-          onEdit={r => { setEditItem(r); setIsNew(false); }}
-          onAdd={handleAddUnit}
-          onDelete={handleDelete}
-          onRenameRow={handleRenameRow}
-          onDeleteRow={handleDeleteRow}
-          onSaveAreaOrder={handleSaveAreaOrder}
-          onAddArea={handleAddArea}
-          onSaveUnitOrder={handleSaveUnitOrder}
-        />
-      );
-      default: return (
-        <div className="page">
-          <ComingSoon title={pageTitle} />
-        </div>
-      );
+      if(isStorage){
+        // Clear the unit FIRST — this must always happen
+        const cleared={...unit,tenant:null,email:null,phone:null,payment:null,
+          rent:null,vat_rent:null,status:"available",notes:null,
+          lock_deposit_paid:null,lock_deposit_amount:null,tenant_deposit:null,key_number:null,address:null};
+        await dbUpsert(cleared,token);
+        setData(d=>d.map(r=>r.id===id?cleared:r));
+        showToast(`📦 "${name}" archived — unit marked as Available`);
+      } else {
+        // For Residential/Commercial — remove from active view
+        await dbDelete(id,token);
+        setData(d=>d.filter(r=>r.id!==id));
+        showToast(`📦 "${name}" archived successfully`);
+      }
+
+      // Move documents to archive using server-side copy
+      if(archiveId){
+        const safeUnitId=(id||"").replace(/[^a-zA-Z0-9._-]/g,"_");
+        const docs=await listDocuments(safeUnitId,token);
+        for(const doc of (Array.isArray(docs)?docs:[])){
+          try{
+            const srcPath=`${safeUnitId}/${doc.name}`;
+            const dstPath=`archive/${archiveId}/${doc.name}`;
+            const copyR=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+              method:"POST",
+              headers:{...BASE_H,Authorization:`Bearer ${token}`},
+              body:JSON.stringify({bucketId:"documents",sourceKey:srcPath,destinationKey:dstPath,destinationBucket:"documents"})
+            });
+            if(copyR.ok){
+              await deleteDocument(srcPath,token);
+            }
+          }catch(e){}
+        }
+      }
+    }
+    catch(e){showToast("❌ Archive failed — "+(e?.message||"unknown error"));}
+  }
+
+
+  async function handleRestore(archiveId, isDeleted=false){
+    try{
+      if(isDeleted){
+        // Restoring a soft-deleted tenant from the tenants table
+        const r=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(archiveId)}`,{headers:authH(token)});
+        const rows=await r.json();
+        if(!rows||!rows[0]){showToast("❌ Record not found");return;}
+        const row=rows[0];
+        const orig=row.deleted_data?JSON.parse(row.deleted_data):row;
+        const restored={...orig,deleted_at:null,deleted_data:null,archived:false};
+        await dbUpsert(restored,token);
+        // If this was a storage snapshot (generated ID), clean up the snapshot row
+        if(row.id!==orig.id){
+          await dbDelete(row.id,token);
+        }
+        const fresh=await dbGet(token);
+        setData(fresh);
+        showToast("✅ Restored — "+(orig.tenant||orig.label||row.id));
+        return;
+      }
+
+      // Restoring from archived_tenants table
+      const r=await fetch(`${SUPABASE_URL}/rest/v1/archived_tenants?id=eq.${archiveId}`,{headers:authH(token)});
+      const rows=await r.json();
+      if(!rows||!rows[0]){showToast("❌ Archive record not found");return;}
+      const record=rows[0];
+      const tenantData=record.tenant_data;
+      const unitId=record.original_unit_id;
+      // Hard block — never allow restore if unit is currently occupied
+      const unit=data.find(u=>u.id===unitId);
+      const unitOccupied=unit&&(unit.tenant||["occupied","new","arrears","leaving"].includes(unit.status));
+      if(unitOccupied){
+        alert(
+          `⛔ Cannot Restore\n\n` +
+          `Unit ${unitId} is currently occupied by "${unit.tenant||"a tenant"}".\n\n` +
+          `Restoring would overwrite their record and cannot be undone.\n\n` +
+          `To restore ${tenantData?.tenant||"this tenant"}, first move or archive the current occupant, ` +
+          `or add them as a new tenant to a different vacant unit.`
+        );
+        return;
+      }
+      // If unit exists but is vacant, confirm before proceeding
+      if(unit&&!unitOccupied){
+        if(!window.confirm(
+          `Restore ${tenantData?.tenant||unitId} to unit ${unitId}?\n\n` +
+          `The unit is currently vacant. Their details and documents will be restored.`
+        )) return;
+      }
+      // If unit doesn't exist at all (e.g. was deleted), warn
+      if(!unit){
+        if(!window.confirm(
+          `Restore ${tenantData?.tenant||unitId}?\n\n` +
+          `Unit ${unitId} no longer exists on the site plan and will be recreated. Continue?`
+        )) return;
+      }
+
+      const restored={...tenantData,id:unitId,archived:false,deleted_at:null,deleted_data:null};
+      await dbUpsert(restored,token);
+
+      // Move documents using server-side copy (no browser download needed)
+      const safeUnitId=(unitId||"").replace(/[^a-zA-Z0-9._-]/g,"_");
+      const archiveDocs=await listDocuments("archive/"+archiveId,token);
+      let docsRestored=0;
+      for(const doc of (Array.isArray(archiveDocs)?archiveDocs:[])){
+        const archivePath=`archive/${archiveId}/${doc.name}`;
+        const newPath=`${safeUnitId}/${doc.name}`;
+        try{
+          // Use Supabase server-side copy API
+          const copyR=await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{
+            method:"POST",
+            headers:{...BASE_H,Authorization:`Bearer ${token}`},
+            body:JSON.stringify({bucketId:"documents",sourceKey:archivePath,destinationKey:newPath,destinationBucket:"documents"})
+          });
+          if(copyR.ok){
+            // Update document_tags path
+            await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(archivePath)}`,{
+              method:"PATCH",
+              headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Prefer:"return=minimal"},
+              body:JSON.stringify({file_path:newPath,tenant_id:safeUnitId})
+            });
+            await deleteDocument(archivePath,token);
+            docsRestored++;
+          }
+        }catch(e){}
+      }
+      showToast(`✅ Restored — ${tenantData?.tenant||tenantData?.label||unitId} · ${docsRestored} doc${docsRestored!==1?"s":""} restored`);
+
+      await archiveDelete(archiveId,token);
+      const fresh=await dbGet(token);
+      setData(fresh);
+    }
+    catch{showToast("❌ Restore failed");}
+  }
+
+  async function handlePermanentDelete(id, isDeleted=false){
+    if(!window.confirm("Permanently delete this record? This cannot be undone.")) return;
+    try{
+      if(isDeleted){
+        await dbDelete(id,token);
+      } else {
+        await archiveDelete(id,token);
+      }
+      showToast("🗑️ Permanently deleted");
+    }
+    catch{showToast("❌ Delete failed");}
+  }
+  function handleAdd(){
+    setEditItem({id:"",label:null,tenant:"",email:"",phone:"",payment:"Monthly DD",rent:null,vat_rent:null,status:"occupied",category:"Storage",row_name:"",box_no:"",size:"XL(20ft)",section:"",review:"",notes:""});
+    setIsNew(true);
+  }
+  async function handleImport(rows){
+    if(!rows||rows.length===0){showToast("❌ No valid rows found in spreadsheet");return;}
+    showToast(`⏳ Importing ${rows.length} records…`);
+    try{
+      for(const row of rows){
+        await dbUpsert({...row,deleted_at:null,deleted_data:null,archived:false},token);
+      }
+      const fresh=await dbGet(token);
+      setData(fresh);
+      // Rebuild areas table from imported data
+      const storageRows=[...new Set(fresh.filter(d=>d.category==="Storage"&&d.row_name).map(d=>d.row_name))];
+      for(let i=0;i<storageRows.length;i++){
+        await areasUpsert(storageRows[i],"Storage",i,token,orgId);
+      }
+      const freshAreas=await areasGet(token, orgId);
+      setAreas(freshAreas||[]);
+      showToast(`✅ Imported ${rows.length} records successfully`);
+    }catch(e){
+      showToast("❌ Import failed — please try again");
     }
   }
+  async function handleAddUnit(unit){
+    try{
+      await dbUpsert(unit,token);
+      setData(d=>[...d,unit]);
+      // Add area to areas table if it doesn't exist
+      if(unit.row_name){
+        const exists=areas.some(a=>a.name===unit.row_name);
+        if(!exists){
+          await areasUpsert(unit.row_name,"Storage",areas.length,token,orgId);
+          const fresh=await areasGet(token, orgId);
+          setAreas(fresh||[]);
+        }
+      }
+      showToast("✅ Unit added to site plan");
+    }
+    catch{showToast("❌ Could not add unit — check the ID is unique");}
+  }
 
-  if (!session) return <><style>{CSS}</style><LoginPage onLogin={handleLogin} /></>;
+  async function handleRenameRow(oldName,newName){
+    try{
+      const units=data.filter(u=>u.row_name===oldName);
+      for(const u of units){await dbUpsert({...u,row_name:newName},token);}
+      setData(d=>d.map(u=>u.row_name===oldName?{...u,row_name:newName}:u));
+      const area=areas.find(a=>a.name===oldName);
+      if(area){
+        await areasDelete(oldName,token,orgId);
+        await areasUpsert(newName,"Storage",area.sort_order,token,orgId);
+        const fresh=await areasGet(token, orgId);
+        setAreas(fresh||[]);
+      }
+      showToast(`✅ Renamed "${oldName}" to "${newName}"`);
+    }catch{showToast("❌ Rename failed");}
+  }
 
-  if (orgLoading) return (
+  async function handleDeleteRow(rowName){
+    try{
+      const units=data.filter(u=>u.row_name===rowName);
+      for(const u of units){await dbDelete(u.id,token);}
+      setData(d=>d.filter(u=>u.row_name!==rowName));
+      await areasDelete(rowName,token,orgId);
+      const fresh=await areasGet(token, orgId);
+      setAreas(fresh||[]);
+      showToast(`🗑️ Deleted area "${rowName}" and all its units`);
+    }catch{showToast("❌ Delete failed");}
+  }
+
+  function handleAddFromDashboard(category){
+    setEditItem({id:"",label:"",tenant:"",email:"",phone:"",payment:"Monthly DD",rent:null,vat_rent:null,status:"occupied",category,row_name:null,box_no:null,size:null,section:null,review:"",notes:""});
+    setIsNew(true);
+  }
+
+  if(!session) return(
+    <><style>{CSS}</style><LoginPage onLogin={handleLogin}/></>
+  );
+
+  if(orgLoading) return(
     <><style>{CSS}</style>
-    <div style={{ minHeight: "100vh", background: "var(--mist)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ textAlign: "center", color: "var(--sub)", fontSize: 14 }}>
-        <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", marginBottom: 8 }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
+    <div style={{minHeight:"100vh",background:"var(--mist)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{textAlign:"center",color:"var(--sub)",fontSize:14}}>
+        <ShieldLogo size={48}/>
+        <div style={{fontFamily:"var(--fh)",fontSize:20,fontWeight:700,color:"var(--navy)",marginTop:12,marginBottom:8}}>cerect<span style={{color:"var(--gold)"}}>.</span></div>
         Loading your account…
       </div>
-    </div>
+    </div></>
+  );
+
+  if(needsOnboarding) return(
+    <><style>{CSS}</style>
+    <OnboardingPage session={session} onComplete={o=>{setOrg(o);setNeedsOnboarding(false);showToast("✅ Welcome to Cerect!");}}/>
     </>
   );
 
-  if (needsOnboarding) return (
-    <><style>{CSS}</style><OnboardingPage session={session} onComplete={handleOnboardingComplete} /></>
-  );
+  const userEmail=session?.user?.email||"Admin";
+  const initials=userEmail.slice(0,2).toUpperCase();
+  const isSuperAdmin=userEmail.trim().toLowerCase()===SUPER_ADMIN_EMAIL.toLowerCase();
 
-  return (
+  return(
     <>
       <style>{CSS}</style>
-      {impersonating && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "#7B3FA0", color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 20px", fontSize: 13, fontWeight: 500 }}>
-          <span>👁 Viewing as <strong>{impersonating.org.name}</strong> — you are in admin impersonation mode</span>
-          <button onClick={handleStopImpersonating} style={{ background: "#fff", color: "#7B3FA0", border: "none", borderRadius: 6, padding: "4px 12px", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
-            ✕ Exit — back to my account
-          </button>
+      {impersonating&&(
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:9999,background:"#7B3FA0",color:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 20px",fontSize:13,fontWeight:500}}>
+          <span>👁 Viewing as <strong>{impersonating.org.name}</strong> — admin impersonation mode</span>
+          <button onClick={handleStopImpersonating} style={{background:"#fff",color:"#7B3FA0",border:"none",borderRadius:6,padding:"4px 12px",fontWeight:700,cursor:"pointer",fontSize:12}}>✕ Exit — back to my account</button>
         </div>
       )}
-      {offline && (
-        <div style={{ position: "fixed", top: impersonating ? 40 : 0, left: 0, right: 0, zIndex: 9998, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
-          ⚠️ No internet connection — changes may not save
+      {offline&&(
+        <div style={{position:"fixed",top:impersonating?40:0,left:0,right:0,zIndex:9998,background:"#C0392B",color:"#fff",textAlign:"center",padding:"10px 16px",fontSize:13,fontWeight:600}}>
+          ⚠️ No internet connection — changes will not be saved until you reconnect
         </div>
       )}
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: "var(--danger)", color: "#fff", textAlign: "center", padding: "8px 16px", fontSize: 13, fontWeight: 500 }}>
-          ⚠️ No internet connection — changes may not save
-        </div>
-      )}
-      {offlineToast && (
-        <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 9999, background: "var(--success)", color: "#fff", padding: "10px 16px", borderRadius: "var(--r)", fontSize: 13, fontWeight: 500 }}>
-          ✅ Back online
-        </div>
-      )}
-      {showGlobalSearch && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(11,30,61,.55)", zIndex: 500, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 80 }}
-          onClick={e => e.target === e.currentTarget && setShowGlobalSearch(false)}>
-          <div style={{ background: "#fff", borderRadius: "var(--r2)", width: "100%", maxWidth: 560, boxShadow: "var(--shl)", overflow: "hidden" }}>
-            <input
-              autoFocus
-              placeholder="Search tenants, units, email, phone…"
-              value={globalSearch}
-              onChange={e => setGlobalSearch(e.target.value)}
-              style={{ width: "100%", fontFamily: "var(--fb)", fontSize: 16, padding: "16px 20px", border: "none", outline: "none", borderBottom: "1px solid var(--border)" }}
-            />
-            <div style={{ maxHeight: 360, overflowY: "auto" }}>
-              {globalSearch.length > 1 && (() => {
-                const q = globalSearch.toLowerCase();
-                const results = data.filter(t =>
-                  (t.tenant || "").toLowerCase().includes(q) ||
-                  (t.id || "").toLowerCase().includes(q) ||
-                  (t.email || "").toLowerCase().includes(q) ||
-                  (t.phone || "").toLowerCase().includes(q) ||
-                  (t.label || "").toLowerCase().includes(q) ||
-                  (t.notes || "").toLowerCase().includes(q) ||
-                  (t.address || "").toLowerCase().includes(q)
-                ).slice(0, 10);
-                if (results.length === 0) return <div style={{ padding: "20px", textAlign: "center", color: "var(--sub)", fontSize: 14 }}>No results found</div>;
-                return results.map(t => (
-                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
-                    onClick={() => { setEditItem(t); setIsNew(false); setShowGlobalSearch(false); setGlobalSearch(""); }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{t.tenant || t.label || t.id}</div>
-                      <div style={{ fontSize: 12, color: "var(--sub)" }}>{t.label || t.id} · {t.category} · {t.status}</div>
-                    </div>
-                    <Pill s={t.status} />
-                  </div>
-                ));
-              })()}
-              {globalSearch.length <= 1 && (
-                <div style={{ padding: "16px 20px", fontSize: 13, color: "var(--sub)" }}>Type to search across all tenants and units</div>
-              )}
+      <div className="app" style={impersonating?{marginTop:40}:{}}>
+        <div className={`sidebar-overlay${mobileNav?" active":""}`} onClick={()=>setMobileNav(false)}/>
+        <aside className={`sidebar${mobileNav?" mobile-open":""}`}>
+          <div className="logo-wrap">
+            <div className="logo-row">
+              <ShieldLogo size={36}/>
+              <div className="logo-mark">cerect<span style={{color:"var(--gold)"}}>.</span></div>
             </div>
-            <div style={{ padding: "8px 20px", fontSize: 11, color: "var(--sub)", borderTop: "1px solid var(--border)" }}>Press Esc to close</div>
+            <div className="logo-sub">{activeOrg?.name||"Management Platform"}</div>
           </div>
-        </div>
-      )}
-      <div className="app" style={impersonating ? { marginTop: 40 } : {}}>
-        <Sidebar
-          page={page}
-          setPage={setPage}
-          session={session}
-          org={activeOrg}
-          onSignOut={handleSignOut}
-          open={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-          impersonating={impersonating}
-          onStopImpersonating={handleStopImpersonating}
-        />
-        <div className="main">
+          <nav className="snav">
+            {NAV.map((item,i)=>item.section
+              ?<div key={i} className="ns">{item.section}</div>
+              :<button key={item.id} className={`ni ${page===item.id?"active":""}`} onClick={()=>{setPage(item.id);setMobileNav(false);}}>
+                <span className="nicon">{item.icon}</span>{item.label}
+              </button>
+            )}
+            {isSuperAdmin&&!impersonating&&(
+              <>
+                <div className="ns">Platform</div>
+                <button className={`ni ${page==="superadmin"?"active":""}`} onClick={()=>{setPage("superadmin");setMobileNav(false);}}>
+                  <span className="nicon">⚙️</span>Super Admin
+                </button>
+              </>
+            )}
+          </nav>
+          <div className="sfooter">
+            {impersonating&&(
+              <button onClick={handleStopImpersonating} style={{width:"100%",background:"#7B3FA0",color:"#fff",border:"none",borderRadius:8,padding:"10px 14px",fontWeight:600,fontSize:12,cursor:"pointer",marginBottom:8,textAlign:"left"}}>
+                ✕ Exit impersonation
+              </button>
+            )}
+            <div className="urow">
+              <div className="uav">{initials}</div>
+              <div>
+                <div className="uname">{userEmail}</div>
+                <button className="signout-btn" onClick={handleSignOut}>Sign out</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+        <main className="main">
           <div className="topbar">
-            <button className="hamburger" onClick={() => setSidebarOpen(o => !o)}>
-              <span style={{ width: 20, height: 20, display: "block" }}>{Icon.menu}</span>
-            </button>
-            <div className="topbar-title">{pageTitle}</div>
-            <button
-              className="sp-btn"
-              style={{ fontSize: 12, gap: 6 }}
-              onClick={() => setShowGlobalSearch(s => !s)}
-              title="Global search (⌘K)"
-            >
-              🔍 Search
-            </button>
-            <div className="topbar-org">{org?.name || "Trial"}</div>
+            <div className="fr" style={{gap:10,alignItems:"center"}}>
+              <button className="hamburger" onClick={()=>setMobileNav(!mobileNav)} aria-label="Menu">☰</button>
+              <div className="topbar-title">{TITLES[page]||"Cerect"}</div>
+            </div>
+            <div className="fr" style={{gap:16}}>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:12,color:"var(--sub)",fontWeight:500}}>Monthly Revenue</div>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--navy)"}}>£{data.filter(u=>u.rent&&["occupied","arrears","new"].includes(u.status)).reduce((a,b)=>a+(Number(b.rent)||0),0).toLocaleString()}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:12,color:"var(--sub)",fontWeight:500}}>Occupancy</div>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--navy)"}}>
+                  {Math.round(data.filter(d=>d.category==="Storage").filter(u=>["occupied","arrears","new"].includes(u.status)).length/Math.max(data.filter(d=>d.category==="Storage").length,1)*100)}%
+                </div>
+              </div>
+              <div style={{width:1,height:32,background:"#E4EAF2"}}/>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:"var(--sub)"}}>Signed in as</div>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{userEmail}</div>
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={()=>setShowGlobalSearch(s=>!s)} title="Search everything (Ctrl+K)">🔍</button>
+              <button className="btn btn-outline btn-sm" onClick={()=>setPage("users")} title="Users & Settings">⚙️</button>
+            </div>
           </div>
-          {dataLoading && page === "siteplan" ? (
-            <div style={{ padding: 40, textAlign: "center", color: "var(--sub)" }}>Loading site plan…</div>
-          ) : renderPage()}
-        </div>
+          {showGlobalSearch&&(
+            <div style={{background:"#fff",borderBottom:"1px solid #E4EAF2",padding:"10px 28px",display:"flex",gap:10,alignItems:"center"}}>
+              <input autoFocus value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)}
+                placeholder="Search tenants by name, unit, email, phone, notes…"
+                style={{flex:1,fontFamily:"var(--fb)",fontSize:14,padding:"8px 14px",border:"1.5px solid var(--gold)",borderRadius:8,outline:"none"}}
+                onKeyDown={e=>e.key==="Escape"&&(setShowGlobalSearch(false),setGlobalSearch(""))}/>
+              <button className="btn btn-outline btn-sm" onClick={()=>{setShowGlobalSearch(false);setGlobalSearch("");}}>✕</button>
+            </div>
+          )}
+          {showGlobalSearch&&globalSearch.trim()&&(()=>{
+            const q=globalSearch.toLowerCase();
+            const results=data.filter(t=>
+              (t.tenant||"").toLowerCase().includes(q)||(t.id||"").toLowerCase().includes(q)||
+              (t.email||"").toLowerCase().includes(q)||(t.phone||"").toLowerCase().includes(q)||
+              (t.notes||"").toLowerCase().includes(q)||(t.label||"").toLowerCase().includes(q)||
+              (t.address||"").toLowerCase().includes(q)
+            ).slice(0,12);
+            return(
+              <div style={{background:"#fff",borderBottom:"1px solid #E4EAF2",padding:"0 28px 14px",maxHeight:360,overflowY:"auto"}}>
+                {results.length===0
+                  ?<div style={{fontSize:13,color:"var(--sub)",padding:"12px 0"}}>No results for "{globalSearch}"</div>
+                  :results.map(t=>(
+                    <div key={t.id} onClick={()=>{setEditItem(t);setIsNew(false);setShowGlobalSearch(false);setGlobalSearch("");}}
+                      style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid #F0F4FA",cursor:"pointer"}}>
+                      <div style={{fontFamily:"var(--fh)",fontWeight:700,color:"var(--navy)",minWidth:60}}>{t.label||t.id}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:600}}>{t.tenant||<span style={{color:"var(--sub)"}}>Vacant</span>}</div>
+                        <div style={{fontSize:11,color:"var(--sub)"}}>{t.email||""} {t.phone?`· ${t.phone}`:""}</div>
+                      </div>
+                      <Pill s={t.status}/>
+                      {t.rent&&<span style={{fontSize:13,fontWeight:600}}>£{t.rent}/mo</span>}
+                    </div>
+                  ))
+                }
+              </div>
+            );
+          })()}
+          <div className="content">
+            {loading
+              ?<div className="loading">⏳ Loading your data…</div>
+              :<>
+                {page==="superadmin"&&isSuperAdmin&&<SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate}/>}
+                {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
+                {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow}
+                  onSaveAreaOrder={async(names)=>{await areasUpdateOrder(names,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);}}
+                  onAddArea={async(name)=>{await areasUpsert(name,"Storage",areas.length,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);showToast(`✅ Area "${name}" created`);}}
+                  onSaveUnitOrder={async(updates)=>{
+                    for(const u of updates){await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(u.id)}&org_id=eq.${orgId}`,{method:"PATCH",headers:{...authH(token),Prefer:"return=minimal"},body:JSON.stringify({sort_order:u.sort_order,row_name:u.row_name})});}
+                    setData(d=>d.map(r=>{const upd=updates.find(u=>u.id===r.id);return upd?{...r,sort_order:upd.sort_order,row_name:upd.row_name}:r;}));
+                    showToast("✅ Order saved");
+                  }}/>}
+                {page==="tenants"&&<Tenants data={data} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAdd} onArchive={handleArchive}/>}
+                {page==="tasks"&&<TasksPage token={token} showToast={showToast} data={data} orgId={orgId}/>}
+                {page==="calendar"&&<CalendarPage data={data} enquiries={enquiries} tasks={tasks}/>}
+                {page==="payments"&&<Payments data={data} token={token} showToast={showToast} orgId={orgId} onStatusUpdate={async(unitId,status)=>{
+                  const unit=data.find(u=>u.id===unitId);if(!unit) return;
+                  await dbUpsert({...unit,status,org_id:orgId},token);
+                  setData(d=>d.map(u=>u.id===unitId?{...u,status}:u));
+                }}/>}
+                {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId}/>}
+                {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast}/>}
+                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId}/>}
+                {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete}/>}
+                {page==="users"&&<UsersPage token={token} currentUserEmail={userEmail} orgId={orgId}/>}
+              </>
+            }
+          </div>
+        </main>
       </div>
-
-      {/* Edit Modal */}
-      {editItem && (
-        <EditModal
-          item={editItem}
-          isNew={isNew}
-          areas={areas}
-          existingIds={data}
-          onClose={() => setEditItem(null)}
-          onSave={async form => { await handleSave(form); }}
-          onDelete={async id => { await handleDelete(id); setEditItem(null); }}
-          token={token}
-          onSwitchToEdit={savedForm => { setEditItem(savedForm); setIsNew(false); }}
-          onArchive={id => { handleArchive(id); setEditItem(null); }}
-        />
+      {editItem&&(
+        <EditModal item={editItem} isNew={isNew} onClose={()=>setEditItem(null)}
+          onArchive={handleArchive} areas={areas.map(a=>a.name)} token={token} existingIds={data}
+          onChangeUnitId={async(oldId,newId)=>{
+            const unit=data.find(u=>u.id===oldId);if(!unit) return;
+            const checkR=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(newId)}&org_id=eq.${orgId}`,{headers:authH(token)});
+            const checkData=await checkR.json();
+            if(Array.isArray(checkData)&&checkData.length>0){alert(`❌ Unit "${newId}" already exists. Please choose a different ID.`);return;}
+            await dbUpsert({...unit,id:newId,org_id:orgId},token);
+            await dbDelete(oldId,token,orgId);
+            const safeOldId=oldId.replace(/[^a-zA-Z0-9._-]/g,"_");
+            const safeNewId=newId.replace(/[^a-zA-Z0-9._-]/g,"_");
+            const docs=await listDocuments(safeOldId,token);
+            for(const doc of (Array.isArray(docs)?docs:[])){
+              const srcPath=`${safeOldId}/${doc.name}`;const dstPath=`${safeNewId}/${doc.name}`;
+              await fetch(`${SUPABASE_URL}/storage/v1/object/copy`,{method:"POST",headers:{...BASE_H,Authorization:`Bearer ${token}`},body:JSON.stringify({bucketId:"documents",sourceKey:srcPath,destinationKey:dstPath,destinationBucket:"documents"})});
+              await deleteDocument(srcPath,token);
+              await fetch(`${SUPABASE_URL}/rest/v1/document_tags?file_path=eq.${encodeURIComponent(srcPath)}`,{method:"PATCH",headers:{...authH(token),Prefer:"return=minimal"},body:JSON.stringify({file_path:dstPath,tenant_id:safeNewId})});
+            }
+            const fresh=await dbGet(token,orgId);setData(fresh);
+            showToast(`✅ Unit ID changed from "${oldId}" to "${newId}"`);
+          }}
+          onSave={async(row)=>{
+            const rowWithOrg={...row,org_id:orgId};
+            if(isNew){await handleSaveNew(rowWithOrg);}else{await handleSave(rowWithOrg);}
+            if(row.row_name&&!areas.some(a=>a.name===row.row_name)){
+              await areasUpsert(row.row_name,"Storage",areas.length,token,orgId);
+              const fresh=await areasGet(token,orgId);setAreas(fresh||[]);
+            }
+          }}
+          onDelete={handleDelete}/>
       )}
-
-      <div className="toast-wrap">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>
-        ))}
-      </div>
+      {toast&&<div className="toast">{toast}</div>}
     </>
   );
 }
+// ─── Document Viewer Modal ────────────────────────────────────────────────────
+function DocViewer({url, name, onClose}) {
+  const ext = (name||"").split(".").pop().toLowerCase();
+  const isPdf = ext === "pdf";
+  const isImg = ["jpg","jpeg","png","gif","webp","svg"].includes(ext);
+
+  async function handleDownload() {
+    try {
+      const r = await fetch(url);
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      window.open(url, "_blank");
+    }
+  }
+
+  return (
+    <div className="modal-ov" onClick={e=>e.target===e.currentTarget&&onClose()}
+      style={{zIndex:2000}}>
+      <div style={{
+        background:"var(--white)",borderRadius:"var(--r)",
+        width:"90vw",maxWidth:900,height:"88vh",
+        display:"flex",flexDirection:"column",
+        boxShadow:"0 20px 60px rgba(0,0,0,0.25)",overflow:"hidden"
+      }}>
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+          padding:"12px 18px",borderBottom:"1px solid #E2EAF2",flexShrink:0}}>
+          <div style={{fontFamily:"var(--fh)",fontWeight:700,color:"var(--navy)",
+            fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"60%"}}>
+            {name}
+          </div>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            <button className="btn btn-outline btn-sm" onClick={handleDownload}>⬇️ Download</button>
+            <button className="btn btn-outline btn-sm" onClick={()=>window.open(url,"_blank")}>↗ Open in tab</button>
+            <button className="btn btn-outline btn-sm" onClick={onClose}>✕ Close</button>
+          </div>
+        </div>
+        {/* Viewer body */}
+        <div style={{flex:1,overflow:"hidden",background:"#F4F7FA",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {isPdf && (
+            <iframe
+              src={url}
+              title={name}
+              style={{width:"100%",height:"100%",border:"none"}}
+            />
+          )}
+          {isImg && (
+            <img src={url} alt={name}
+              style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",padding:16}} />
+          )}
+          {!isPdf && !isImg && (
+            <div style={{textAlign:"center",padding:40}}>
+              <div style={{fontSize:48,marginBottom:16}}>{fileIcon(name)}</div>
+              <div style={{fontSize:14,color:"var(--sub)",marginBottom:20}}>{name}</div>
+              <p style={{fontSize:13,color:"var(--sub)",marginBottom:20}}>
+                This file type cannot be previewed inline.
+              </p>
+              <button className="btn btn-primary" onClick={handleDownload}>⬇️ Download file</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
