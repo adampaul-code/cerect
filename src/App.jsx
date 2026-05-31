@@ -632,6 +632,31 @@ tr:hover td{background:#FAFCFF}
 @keyframes su{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 `;
 
+// ─── Confirm Modal ────────────────────────────────────────────────────────────
+function useConfirm() {
+  const [state, setState] = useState(null); // {msg, resolve, title, danger}
+  const confirm = (msg, opts={}) => new Promise(resolve => setState({ msg, resolve, title: opts.title||"Confirm", danger: opts.danger||false }));
+  const Modal = state ? (
+    <div className="modal-ov" style={{zIndex:9000}}>
+      <div className="modal" style={{maxWidth:420}}>
+        <div className="modal-header">
+          <div className="modal-title">{state.title}</div>
+        </div>
+        <div className="modal-body">
+          <p style={{fontSize:14,color:"var(--text)",lineHeight:1.6}}>{state.msg}</p>
+        </div>
+        <div className="modal-footer">
+          <button className="modal-btn modal-btn-outline" onClick={()=>{state.resolve(false);setState(null);}}>Cancel</button>
+          <button className={`modal-btn ${state.danger?"modal-btn-danger":"modal-btn-primary"}`} autoFocus onClick={()=>{state.resolve(true);setState(null);}}>
+            {state.danger?"Yes, delete":"Confirm"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+  return { confirm, Modal };
+}
+
 // ─── Small components ─────────────────────────────────────────────────────────
 function Pill({s}){return <span className={`pill ${PC[s]||"p-occ"}`}>{SL[s]||s}</span>;}
 
@@ -5289,6 +5314,7 @@ export default function App(){
   const [isNew,setIsNew]=useState(false);
   const [toast,setToast]=useState(null);
   const [offline,setOffline]=useState(false);
+  const { confirm: confirmDialog, Modal: ConfirmModal } = useConfirm();
 
   const token=session?.access_token;
   const orgId = impersonating ? impersonating.org.id : org?.id;
@@ -6106,6 +6132,7 @@ export default function App(){
           onDelete={handleDelete}/>
       )}
       {toast&&<div className="toast">{toast}</div>}
+      {ConfirmModal}
     </>
   );
 }
