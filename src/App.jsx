@@ -937,7 +937,7 @@ function LoginPage({onLogin}){
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────────────────────
-function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[],orgId}){
+function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,areas=[],token,existingIds=[],orgId,showToast}){
   const [form,setForm]=useState({...item});
   const [saving,setSaving]=useState(false);
   const [newArea,setNewArea]=useState("");
@@ -1102,7 +1102,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
         {!isNew&&token&&(
           <div style={{borderTop:"1px solid #E4EAF2",padding:"16px 22px"}}>
             <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📁 Documents</div>
-            <TenantDocuments tenantId={form.id} token={token} orgId={orgId}/>
+            <TenantDocuments tenantId={form.id} token={token} orgId={orgId} showToast={showToast}/>
           </div>
         )}
         <div className="mf">
@@ -3734,7 +3734,7 @@ function UsersPage({token,currentUserEmail,orgId}){
 
 
 // ─── Tenant Documents ─────────────────────────────────────────────────────────
-function TenantDocuments({tenantId, token, orgId}){
+function TenantDocuments({tenantId, token, orgId, showToast}){
   // Preserve folder prefixes like archive/ and enquiry/ — only sanitise each segment
   const safeId=(tenantId||"").split("/").map(seg=>seg.replace(/\s+/g,'').replace(/[^a-zA-Z0-9._-]/g,"_")).join("/");
   const [docs,setDocs]=useState([]);
@@ -4131,7 +4131,7 @@ function DocCount({archiveId, token}){
     {count>0?`📎 ${count} doc${count!==1?"s":""}`:""}</span>;
 }
 
-function ArchivePage({token,onRestore,onPermanentDelete,orgId}){
+function ArchivePage({token,onRestore,onPermanentDelete,orgId,showToast}){
   const [archived,setArchived]=useState([]);
   const [deleted,setDeleted]=useState([]);
   const [tab,setTab]=useState("archived");
@@ -4319,7 +4319,7 @@ function ArchivePage({token,onRestore,onPermanentDelete,orgId}){
               <button className="mc" onClick={()=>setViewDocs(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token} orgId={orgId}/>
+              <TenantDocuments tenantId={"archive/"+viewDocs.archiveId} token={token} orgId={orgId} showToast={showToast}/>
             </div>
           </div>
         </div>
@@ -4340,7 +4340,7 @@ const ENQUIRY_STATUSES={
   archived:"📦 Archived",
 };
 
-function EnquiriesPage({token,data,orgId,onDataRefresh}){
+function EnquiriesPage({token,data,orgId,onDataRefresh,showToast}){
   const [enquiries,setEnquiries]=useState([]);
   const [loading,setLoading]=useState(true);
   const [statusFilter,setStatusFilter]=useState("all");
@@ -4622,7 +4622,7 @@ function EnquiriesPage({token,data,orgId,onDataRefresh}){
               <button className="mc" onClick={()=>setViewDocsEnquiry(null)}>✕</button>
             </div>
             <div style={{padding:"16px 22px"}}>
-              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token} orgId={orgId}/>
+              <TenantDocuments tenantId={"enquiry_"+viewDocsEnquiry.id} token={token} orgId={orgId} showToast={showToast}/>
             </div>
           </div>
         </div>
@@ -4716,7 +4716,7 @@ function EnquiriesPage({token,data,orgId,onDataRefresh}){
               {(editItem||form.id)&&(
                 <div style={{borderTop:"1px solid #E4EAF2",paddingTop:16,marginTop:4}}>
                   <div style={{fontFamily:"var(--fh)",fontSize:13,fontWeight:700,color:"var(--navy)",marginBottom:12}}>📧 Email Correspondence</div>
-                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token} orgId={orgId}/>
+                  <TenantDocuments tenantId={"enquiry_"+(editItem?.id||form.id)} token={token} orgId={orgId} showToast={showToast}/>
                 </div>
               )}
             </div>
@@ -6091,8 +6091,8 @@ export default function App(){
                 }}/>}
                 {page==="documents"&&<DocumentsPage data={data} token={token} showToast={showToast} orgId={orgId}/>}
                 {page==="tools"&&<DataTools data={data} onImport={handleImport} token={token} showToast={showToast} orgId={orgId}/>}
-                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData}/>}
-                {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete}/>}
+                {page==="enquiries"&&<EnquiriesPage token={token} data={data} orgId={orgId} onDataRefresh={loadData} showToast={showToast}/>}
+                {page==="archive"&&<ArchivePage token={token} orgId={orgId} onRestore={handleRestore} onPermanentDelete={handlePermanentDelete} showToast={showToast}/>}
                 {page==="users"&&<UsersPage token={token} currentUserEmail={userEmail} orgId={orgId}/>}
               </>
             }
@@ -6129,7 +6129,7 @@ export default function App(){
               const fresh=await areasGet(token,orgId);setAreas(fresh||[]);
             }
           }}
-          onDelete={handleDelete}/>
+          onDelete={handleDelete} showToast={showToast}/>
       )}
       {toast&&<div className="toast">{toast}</div>}
       {ConfirmModal}
