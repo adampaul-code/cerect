@@ -1,4 +1,4 @@
-// Cerect v1.5 — Storage Management Platform
+// Cerect v1.6 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -6,7 +6,7 @@ import * as XLSX from "xlsx";
 
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
-const BASE_H = { "Content-Type": "application/json", apikey: SUPABASE_KEY };
+const SUPER_ADMIN_EMAIL = "adamjpaul@protonmail.com"; "Content-Type": "application/json", apikey: SUPABASE_KEY };
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 async function signIn(email, password) {
@@ -3525,7 +3525,7 @@ async function mfaUnenroll(factorId, token) {
   });
 }
 
-function UsersPage({ token, session, toast }) {
+function UsersPage({ token, session, toast, orgId }) {
   const currentUserEmail = session?.user?.email || "";
   const [users, setUsers] = useState([]);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -3575,12 +3575,21 @@ function UsersPage({ token, session, toast }) {
         body: JSON.stringify({ action: "createUser", email: inviteEmail, password: tempPass }),
       }).then(r => r.json());
       if (d.error) throw new Error(d.error_description || d.msg || d.error);
+      const newUserId = d.id;
+      // Add to org_users so they skip onboarding and join this org
+      if (newUserId && orgId) {
+        await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
+          method: "POST",
+          headers: { ...authH(token), Prefer: "return=minimal" },
+          body: JSON.stringify({ org_id: orgId, user_id: newUserId, role: "staff", invited_at: new Date().toISOString() }),
+        });
+      }
       await fetch("/api/send-invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: inviteEmail, tempPassword: tempPass }),
       });
-      setMsg(`✅ Invitation sent to ${inviteEmail}`);
+      setMsg(`✅ Invitation sent to ${inviteEmail} — they will join your organisation on login`);
       setInviteEmail("");
       await reloadUsers();
     } catch (e) {
@@ -3599,7 +3608,15 @@ function UsersPage({ token, session, toast }) {
         body: JSON.stringify({ action: "createUser", email: newEmail, password: newPassword }),
       }).then(r => r.json());
       if (d.error) throw new Error(d.error_description || d.msg || d.error);
-      setMsg(`✅ User ${newEmail} created`);
+      const newUserId = d.id;
+      if (newUserId && orgId) {
+        await fetch(`${SUPABASE_URL}/rest/v1/org_users`, {
+          method: "POST",
+          headers: { ...authH(token), Prefer: "return=minimal" },
+          body: JSON.stringify({ org_id: orgId, user_id: newUserId, role: "staff", invited_at: new Date().toISOString() }),
+        });
+      }
+      setMsg(`✅ User ${newEmail} created and added to your organisation`);
       setNewEmail(""); setNewPassword(""); setShowAdd(false);
       await reloadUsers();
     } catch (e) {
@@ -5026,6 +5043,180 @@ function DataToolsPage({ data, orgId, token, toast }) {
   );
 }
 
+// ─── Super Admin Page ─────────────────────────────────────────────────────────
+function SuperAdminPage({ token, session }) {
+  const [orgs, setOrgs] = useState([]);
+  const [orgUsers, setOrgUsers] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedOrg, setSelectedOrg] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    if (!token) return;
+    Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/organisations?order=created_at.desc`, { headers: authH(token) }).then(r => r.json()),
+      fetch(`${SUPABASE_URL}/rest/v1/org_users?order=invited_at.desc`, { headers: authH(token) }).then(r => r.json()),
+      fetch("/api/admin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "listUsers" }) }).then(r => r.json()),
+    ]).then(([o, ou, u]) => {
+      setOrgs(Array.isArray(o) ? o : []);
+      setOrgUsers(Array.isArray(ou) ? ou : []);
+      setAllUsers(Array.isArray(u.users) ? u.users : []);
+      setLoading(false);
+    });
+  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function getUsersForOrg(orgId) {
+    const userIds = orgUsers.filter(ou => ou.org_id === orgId).map(ou => ou.user_id);
+    return allUsers.filter(u => userIds.includes(u.id));
+  }
+
+  function getOrgUser(orgId, userId) {
+    return orgUsers.find(ou => ou.org_id === orgId && ou.user_id === userId);
+  }
+
+  async function handleSuspend(org) {
+    if (!window.confirm(`Suspend "${org.name}"? Their users will not be able to log in.`)) return;
+    await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ plan: "suspended" }),
+    });
+    setOrgs(os => os.map(o => o.id === org.id ? { ...o, plan: "suspended" } : o));
+    setMsg(`✅ ${org.name} suspended`);
+  }
+
+  async function handleReactivate(org) {
+    await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ plan: "trial" }),
+    });
+    setOrgs(os => os.map(o => o.id === org.id ? { ...o, plan: "trial" } : o));
+    setMsg(`✅ ${org.name} reactivated`);
+  }
+
+  async function handleSetPlan(orgId, plan) {
+    await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({ plan }),
+    });
+    setOrgs(os => os.map(o => o.id === orgId ? { ...o, plan } : o));
+    setMsg(`✅ Plan updated`);
+  }
+
+  const PLAN_COLORS = {
+    trial: { bg: "#FFF8E6", color: "#7A5C00", border: "#F5E0A0" },
+    core: { bg: "#EBF5F0", color: "var(--success)", border: "#BDE5D3" },
+    professional: { bg: "#EEF4FF", color: "#3B5FA0", border: "#B8D0F8" },
+    business: { bg: "#F3E5F5", color: "#7B1FA2", border: "#CE93D8" },
+    suspended: { bg: "#FFF0EE", color: "var(--danger)", border: "#FFCDD2" },
+  };
+
+  if (loading) return <div className="page"><div style={{ textAlign: "center", padding: 40, color: "var(--sub)" }}>Loading…</div></div>;
+
+  return (
+    <div className="page">
+      {msg && (
+        <div style={{ background: "#EBF5F0", border: "1.5px solid #BDE5D3", borderRadius: 9, padding: "10px 16px", marginBottom: 16, fontSize: 13, color: "var(--success)", display: "flex", justifyContent: "space-between" }}>
+          {msg} <button onClick={() => setMsg("")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--sub)" }}>✕</button>
+        </div>
+      )}
+
+      {/* KPIs */}
+      <div className="kpi-grid" style={{ marginBottom: 20 }}>
+        <div className="kpi-card"><div className="kpi-label">Organisations</div><div className="kpi-value">{orgs.length}</div><div className="kpi-meta">Total accounts</div></div>
+        <div className="kpi-card"><div className="kpi-label">Active</div><div className="kpi-value">{orgs.filter(o => o.plan !== "suspended").length}</div><div className="kpi-meta">Trial + paid</div></div>
+        <div className="kpi-card"><div className="kpi-label">Paid</div><div className="kpi-value">{orgs.filter(o => ["core","professional","business"].includes(o.plan)).length}</div><div className="kpi-meta">Paying customers</div></div>
+        <div className="kpi-card"><div className="kpi-label">Total Users</div><div className="kpi-value">{allUsers.length}</div><div className="kpi-meta">Across all orgs</div></div>
+      </div>
+
+      {/* Org list */}
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", fontFamily: "var(--fh)", fontWeight: 600, fontSize: 15 }}>
+          All Organisations
+        </div>
+        {orgs.map(org => {
+          const users = getUsersForOrg(org.id);
+          const planStyle = PLAN_COLORS[org.plan] || PLAN_COLORS.trial;
+          const isSelected = selectedOrg === org.id;
+          const trialEnd = org.trial_ends_at ? new Date(org.trial_ends_at) : null;
+          const trialDaysLeft = trialEnd ? Math.ceil((trialEnd - new Date()) / 86400000) : null;
+
+          return (
+            <div key={org.id}>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: isSelected ? "var(--mist)" : "" }}
+                onClick={() => setSelectedOrg(isSelected ? null : org.id)}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>{org.name}</span>
+                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 99, background: planStyle.bg, color: planStyle.color, border: `1px solid ${planStyle.border}`, fontWeight: 600 }}>
+                      {org.plan || "trial"}
+                    </span>
+                    {trialDaysLeft !== null && org.plan === "trial" && (
+                      <span style={{ fontSize: 11, color: trialDaysLeft <= 3 ? "var(--danger)" : "var(--sub)" }}>
+                        {trialDaysLeft > 0 ? `${trialDaysLeft} days left` : "Trial expired"}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--sub)" }}>
+                    {users.length} user{users.length !== 1 ? "s" : ""} · Created {new Date(org.created_at).toLocaleDateString("en-GB")} · slug: {org.slug}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select
+                    value={org.plan || "trial"}
+                    onChange={e => { e.stopPropagation(); handleSetPlan(org.id, e.target.value); }}
+                    onClick={e => e.stopPropagation()}
+                    style={{ fontSize: 11, padding: "4px 8px", border: "1.5px solid var(--mist2)", borderRadius: 6, fontFamily: "var(--fb)" }}
+                  >
+                    {["trial", "core", "professional", "business", "suspended"].map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                  {org.plan === "suspended"
+                    ? <button className="sp-btn" style={{ fontSize: 11, background: "#EBF5F0", color: "var(--success)", borderColor: "#BDE5D3" }} onClick={e => { e.stopPropagation(); handleReactivate(org); }}>↩ Reactivate</button>
+                    : <button className="sp-btn sp-btn-danger" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); handleSuspend(org); }}>⏸ Suspend</button>
+                  }
+                  <span style={{ fontSize: 12, color: "var(--sub)", marginLeft: 4 }}>{isSelected ? "▲" : "▼"}</span>
+                </div>
+              </div>
+
+              {/* Expanded org detail */}
+              {isSelected && (
+                <div style={{ background: "var(--mist)", borderBottom: "1px solid var(--border)", padding: "14px 18px" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--navy)" }}>Users in {org.name}</div>
+                  {users.length === 0
+                    ? <div style={{ fontSize: 13, color: "var(--sub)" }}>No users found for this organisation</div>
+                    : users.map(u => {
+                        const ou = getOrgUser(org.id, u.id);
+                        return (
+                          <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 13, fontWeight: 500 }}>{u.email}</div>
+                              <div style={{ fontSize: 11, color: "var(--sub)" }}>
+                                Role: {ou?.role || "—"} ·
+                                Joined: {ou?.joined_at ? new Date(ou.joined_at).toLocaleDateString("en-GB") : "—"} ·
+                                Last sign in: {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString("en-GB") : "Never"} ·
+                                {u.factors?.length > 0 ? " 🔐 MFA on" : " ⚠️ No MFA"}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                  }
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {orgs.length === 0 && <div style={{ padding: "32px", textAlign: "center", color: "var(--sub)" }}>No organisations yet</div>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -5429,6 +5620,18 @@ function Sidebar({ page, setPage, session, org, onSignOut, open, onClose }) {
               </div>
             );
           })}
+          {email === SUPER_ADMIN_EMAIL && (
+            <>
+              <div className="nav-section">Platform</div>
+              <button
+                className={`nav-item ${page === "superadmin" ? "active" : ""}`}
+                onClick={() => { setPage("superadmin"); onClose(); }}
+              >
+                <span className="nav-icon">⚙️</span>
+                Super Admin
+              </button>
+            </>
+          )}
         </nav>
 
         <div className="sidebar-bottom">
@@ -5828,11 +6031,15 @@ export default function App() {
           toast={toast}
         />
       );
+      case "superadmin": return (
+        <SuperAdminPage token={token} session={session} />
+      );
       case "users": return (
         <UsersPage
           token={token}
           session={session}
           toast={toast}
+          orgId={orgId}
         />
       );
       case "archive": return (
