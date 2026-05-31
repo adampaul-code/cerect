@@ -4098,19 +4098,20 @@ function ArchivePage({token,onRestore,onPermanentDelete,orgId}){
   const [viewDocs,setViewDocs]=useState(null); // {archiveId, name}
 
   async function reload(){
-    const [a,d]=await Promise.all([archiveList(token),dbGetDeleted(token)]);
+    const [a,d]=await Promise.all([archiveList(token,orgId),dbGetDeleted(token,orgId)]);
     setArchived(Array.isArray(a)?a:[]);
     setDeleted(Array.isArray(d)?d:[]);
     setLoading(false);
   }
 
   useEffect(()=>{
-    Promise.all([archiveList(token),dbGetDeleted(token)]).then(([a,d])=>{
+    if(!orgId) return;
+    Promise.all([archiveList(token,orgId),dbGetDeleted(token,orgId)]).then(([a,d])=>{
       setArchived(Array.isArray(a)?a:[]);
       setDeleted(Array.isArray(d)?d:[]);
       setLoading(false);
     });
-  },[token]);
+  },[token,orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function restore(id, isDeleted=false){await onRestore(id, isDeleted);reload();}
   async function permDelete(id, isDeleted=false){await onPermanentDelete(id, isDeleted);reload();}
@@ -5392,7 +5393,7 @@ export default function App(){
     try{
       if(isDeleted){
         // Restoring a soft-deleted tenant from the tenants table
-        const r=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(archiveId)}`,{headers:authH(token)});
+        const r=await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(archiveId)}&org_id=eq.${orgId}`,{headers:authH(token)});
         const rows=await r.json();
         if(!rows||!rows[0]){showToast("❌ Record not found");return;}
         const row=rows[0];
