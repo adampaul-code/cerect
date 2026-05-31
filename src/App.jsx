@@ -4342,27 +4342,25 @@ function EnquiriesPage({token,data,orgId}){
 
   async function handleConvert(){
     if(!convertUnit){alert("Please select a unit first.");return;}
-    if(!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
     // Find the unit record
     const unit=data.find(u=>u.id===convertUnit);
     if(!unit){alert("Unit not found.");return;}
-    // Build tenant record from enquiry data
-    const tenantData={
-      ...unit,
-      tenant:convertEnquiry.name,
-      email:convertEnquiry.email||"",
-      phone:convertEnquiry.phone||"",
-      status:"new",
-      move_in_date:new Date().toISOString().slice(0,10),
-      notes:convertEnquiry.notes||""
-    };
-    // Save tenant update
+    // Hard block — only allow if unit is vacant or available
+    const occupiedStatuses=["occupied","arrears","leaving","new"];
+    if(occupiedStatuses.includes(unit.status)||unit.tenant){
+      alert(`❌ Unit ${convertUnit} is not vacant — it currently has a tenant (${unit.tenant||"unknown"}).\n\nPlease choose a vacant or available unit.`);
+      return;
+    }
+    if(!window.confirm(`Convert ${convertEnquiry.name} to a tenant in unit ${convertUnit}?`)) return;
     try{
       await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(convertUnit)}&org_id=eq.${orgId}`,{
         method:"PATCH",
-        headers:{"Content-Type":"application/json",apikey:SUPABASE_KEY,Authorization:`Bearer ${token}`,Prefer:"return=representation"},
-        body:JSON.stringify({tenant:tenantData.tenant,email:tenantData.email,phone:tenantData.phone,status:"new",move_in_date:tenantData.move_in_date,notes:tenantData.notes})
+        headers:{...authH(token),Prefer:"return=minimal"},
+        body:JSON.stringify({tenant:convertEnquiry.name,email:convertEnquiry.email||"",phone:convertEnquiry.phone||"",status:"new",move_in_date:new Date().toISOString().slice(0,10),notes:convertEnquiry.notes||""})
       });
+      // Update local data so tenants/site plan refreshes immediately
+      const updatedUnit={...unit,tenant:convertEnquiry.name,email:convertEnquiry.email||"",phone:convertEnquiry.phone||"",status:"new",move_in_date:new Date().toISOString().slice(0,10)};
+      if(typeof setData==="function") setData(d=>d.map(u=>u.id===convertUnit?updatedUnit:u));
       // Mark enquiry as converted
       await enquiryUpdate(convertEnquiry.id,{status:"converted"},token);
       setEnquiries(enq=>enq.map(e=>e.id===convertEnquiry.id?{...e,status:"converted"}:e));
@@ -4373,7 +4371,7 @@ function EnquiriesPage({token,data,orgId}){
   }
 
   async function reload(){
-    const d=await enquiryList(token);
+    const d=await enquiryList(token,orgId);
     setEnquiries(Array.isArray(d)?d:[]);
   }
 
