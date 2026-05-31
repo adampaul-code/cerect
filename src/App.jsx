@@ -1876,6 +1876,7 @@ function Payments({data, token, showToast, onStatusUpdate, orgId}){
     setMarkingId(unit.id);
     try {
       const rec = {
+        org_id: orgId,
         tenant_id: unit.id,
         period_month: viewMonth,
         amount: Number(unit.rent)||0,
@@ -2327,7 +2328,7 @@ function TasksPage({token,showToast,data=[],orgId}){
     taskList(token)
       .then(t=>{setTasks(Array.isArray(t)?t:[]);setDbError(false);setLoading(false);})
       .catch(()=>{setDbError(true);setTasks([]);setLoading(false);});
-  },[token]);
+  },[token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openAdd(){setForm({...BLANK_TASK});setEditTask(null);setShowForm(true);}
   function openEdit(t){setForm({...t});setEditTask(t);setShowForm(true);}
@@ -4314,8 +4315,8 @@ function EnquiriesPage({token,data,orgId}){
   const u=k=>e=>setForm(f=>({...f,[k]:e.target.value}));
 
   useEffect(()=>{
-    enquiryList(token).then(d=>{setEnquiries(Array.isArray(d)?d:[]);setLoading(false);});
-  },[token]);
+    enquiryList(token, orgId).then(d=>{setEnquiries(Array.isArray(d)?d:[]);setLoading(false);});
+  },[token, orgId]);
 
   // Vacant units matching the enquiry's category
   function matchingVacantUnits(enq){
