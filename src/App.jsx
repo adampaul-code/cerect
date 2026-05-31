@@ -75,6 +75,7 @@ async function refreshSession(refreshToken) {
   return r.json();
 }
 
+// eslint-disable-next-line no-unused-vars
 async function getUser(token) {
   const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
     headers: { ...BASE_H, Authorization: `Bearer ${token}` }
@@ -1839,7 +1840,7 @@ function Payments({data, token, showToast, onStatusUpdate, orgId}){
       .then(r => { setRecords(Array.isArray(r) ? r : []); })
       .catch(e => { console.warn("payment_records fetch failed:", e.message); setDbError(true); setRecords([]); })
       .finally(() => setLoadingRec(false));
-  }, [viewMonth, token]);
+  }, [viewMonth, token, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const monthLabel = (m) => {
     const [y, mo] = m.split("-");
