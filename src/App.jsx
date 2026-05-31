@@ -1,4 +1,4 @@
-// Cerect v1.3 — Storage Management Platform
+// Cerect v1.4 — Storage Management Platform
 // https://cerect.com
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -1310,270 +1310,206 @@ function useToast() {
 }
 
 // ─── Login Page ───────────────────────────────────────────────────────────
+function QRImage({ svgString }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    if (!svgString) return;
+    try {
+      const svg = svgString.startsWith("<svg") || svgString.startsWith("<?xml") ? svgString : `<svg>${svgString}</svg>`;
+      const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 200; canvas.height = 200;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, 200, 200);
+        ctx.drawImage(img, 0, 0, 200, 200);
+        setSrc(canvas.toDataURL("image/png"));
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    } catch {}
+  }, [svgString]);
+  if (!src) return <div style={{ width: 200, height: 200, background: "#f5f5f5", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 12 }}>Loading QR…</div>;
+  return (
+    <div style={{ textAlign: "center" }}>
+      <img src={src} alt="MFA QR Code" style={{ width: 200, height: 200, border: "2px solid var(--mist2)", borderRadius: 8, imageRendering: "pixelated" }} />
+      <div style={{ marginTop: 8 }}>
+        <a href={src} download="cerect-mfa-qr.png" style={{ fontSize: 12, color: "var(--navy)" }}>⬇️ Download QR Code</a>
+      </div>
+    </div>
+  );
+}
+
 function LoginPage({ onLogin }) {
+  const [step, setStep] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [stage, setStage] = useState("login"); // login | mfa-verify | mfa-enroll | forgot
-  const [sessionData, setSessionData] = useState(null);
-  const [mfaCode, setMfaCode] = useState(["", "", "", "", "", ""]);
+  const [session, setSession] = useState(null);
   const [factorId, setFactorId] = useState(null);
   const [challengeId, setChallengeId] = useState(null);
-  const [forgotEmail, setForgotEmail] = useState("");
-  const [forgotSent, setForgotSent] = useState(false);
-  const digitRefs = useRef([]);
+  const [qrCode, setQrCode] = useState(null);
+  const [secret, setSecret] = useState(null);
 
   async function handleLogin(e) {
     e.preventDefault();
-    setErr(""); setLoading(true);
+    setError(""); setLoading(true);
     try {
-      const data = await signIn(email, password);
-      const factors = await mfaListFactors(data.access_token);
-      const totp = factors.find(f => f.factor_type === "totp" && f.status === "verified");
-      if (totp) {
-        const ch = await mfaChallenge(totp.id, data.access_token);
-        setFactorId(totp.id);
+      const sess = await signIn(email, password);
+      if (sess.error) throw new Error(sess.error_description || sess.msg || "Login failed");
+      setSession(sess);
+      const factors = await mfaListFactors(sess.access_token);
+      const totpFactors = Array.isArray(factors) ? factors.filter(f => f.factor_type === "totp" && f.status === "verified") : [];
+      if (totpFactors.length > 0) {
+        const f = totpFactors[0];
+        setFactorId(f.id);
+        const ch = await mfaChallenge(f.id, sess.access_token);
         setChallengeId(ch.id);
-        setSessionData(data);
-        setStage("mfa-verify");
+        setStep("mfa-verify");
       } else {
-        onLogin(data);
+        setStep("mfa-setup");
       }
-    } catch (e) {
-      setErr(e.message);
+    } catch (err) {
+      setError(err.message || "Invalid email or password");
     }
     setLoading(false);
   }
 
-  async function handleMfaVerify() {
-    setErr(""); setLoading(true);
-    const code = mfaCode.join("");
+  async function handleForgotPassword(e) {
+    e.preventDefault();
+    setError(""); setLoading(true);
     try {
-      const r = await mfaVerify(factorId, challengeId, code, sessionData.access_token);
-      if (r.error) throw new Error(r.error.message || "Invalid code");
-      const upgraded = await refreshSession(sessionData.refresh_token);
-      onLogin(upgraded || sessionData);
-    } catch (e) {
-      setErr(e.message);
-      setMfaCode(["", "", "", "", "", ""]);
-      digitRefs.current[0]?.focus();
+      await resetPassword(email);
+      setStep("forgot-sent");
+    } catch {
+      setError("Could not send reset email — please try again");
     }
     setLoading(false);
   }
 
-  async function handleMfaEnroll() {
-    setErr(""); setLoading(true);
+  async function handleSetupMFA() {
+    setLoading(true); setError("");
     try {
-      const { totp, id } = await mfaEnroll(sessionData.access_token);
-      setFactorId(id);
-      setSessionData(d => ({ ...d, qr: totp?.qr_code, secret: totp?.secret }));
-      setStage("mfa-setup");
-    } catch (e) {
-      setErr(e.message);
+      const enroll = await mfaEnroll(session.access_token);
+      if (enroll.error || enroll.msg) throw new Error(enroll.error_description || enroll.msg || "Enrolment failed");
+      if (enroll.id) {
+        setFactorId(enroll.id);
+        setQrCode(enroll.totp?.qr_code);
+        setSecret(enroll.totp?.secret);
+        const ch = await mfaChallenge(enroll.id, session.access_token);
+        setChallengeId(ch.id);
+        setStep("mfa-enroll");
+      } else {
+        throw new Error("No factor ID returned");
+      }
+    } catch (err) {
+      setError("Could not set up MFA: " + err.message);
     }
     setLoading(false);
   }
 
-  function handleDigit(i, val) {
-    const v = val.replace(/\D/g, "").slice(-1);
-    const next = [...mfaCode];
-    next[i] = v;
-    setMfaCode(next);
-    if (v && i < 5) digitRefs.current[i + 1]?.focus();
-    if (next.every(d => d) && v) {
-      setTimeout(() => {
-        const code = next.join("");
-        if (code.length === 6) handleMfaVerifyCode(next.join(""));
-      }, 80);
-    }
-  }
-
-  async function handleMfaVerifyCode(code) {
-    setErr(""); setLoading(true);
+  async function handleVerifyMFA(e) {
+    e.preventDefault();
+    setError(""); setLoading(true);
     try {
-      const ch = await mfaChallenge(factorId, sessionData.access_token);
-      const r = await mfaVerify(factorId, ch.id, code, sessionData.access_token);
-      if (r.error) throw new Error(r.error.message || "Invalid code");
-      const upgraded = await refreshSession(sessionData.refresh_token);
-      onLogin(upgraded || sessionData);
-    } catch (e) {
-      setErr(e.message);
-      setMfaCode(["", "", "", "", "", ""]);
-      digitRefs.current[0]?.focus();
-    }
+      const result = await mfaVerify(factorId, challengeId, code.replace(/\s/g, ""), session.access_token);
+      if (result.access_token) {
+        onLogin({ ...session, access_token: result.access_token });
+      } else {
+        setError("Incorrect code — please try again");
+        const ch = await mfaChallenge(factorId, session.access_token);
+        setChallengeId(ch.id);
+      }
+    } catch { setError("Verification failed — please try again"); }
     setLoading(false);
+    setCode("");
   }
 
-  function handleDigitKey(i, e) {
-    if (e.key === "Backspace" && !mfaCode[i] && i > 0) {
-      digitRefs.current[i - 1]?.focus();
-    }
-  }
+  async function skipMFA() { onLogin(session); }
 
   return (
     <div className="login-page">
-      <div className="login-brand">
-        <div className="brand-logo">
-          <div className="brand-wordmark">cerect<span>.</span></div>
+      <div className="login-box">
+        <div className="login-logo" style={{ flexDirection: "column", gap: 8 }}>
+          <ShieldLogo size={52} />
+          <div className="login-logotext" style={{ color: "var(--navy)" }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
         </div>
-        <div className="brand-tagline">
-          Storage management<br />
-          built for <em>operators</em>
-        </div>
-        <div className="brand-sub">
-          Everything you need to run a storage facility — tenants, payments, documents, and waiting lists — in one place.
-        </div>
-        <div className="brand-dots">
-          <div className="brand-dot active" />
-          <div className="brand-dot" />
-          <div className="brand-dot" />
-        </div>
-      </div>
 
-      <div className="login-form-wrap">
-        <div className="login-box">
-          {stage === "login" && (
-            <>
-              <div className="login-heading">Sign in</div>
-              <div className="login-hint">Welcome back. Enter your details below.</div>
-              {err && <div className="login-err">{err}</div>}
-              <form onSubmit={handleLogin}>
-                <div className="login-field">
-                  <label>Email</label>
-                  <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" autoFocus required />
-                </div>
-                <div className="login-field">
-                  <label>Password</label>
-                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
-                </div>
-                <button className="login-btn" type="submit" disabled={loading}>
-                  {loading ? "Signing in…" : "Sign in"}
-                </button>
-              </form>
-              <button className="login-link" onClick={() => setStage("forgot")}>Forgot password?</button>
-            </>
-          )}
+        {step === "login" && (<>
+          <p className="login-sub">Management Platform — Sign in to continue</p>
+          {error && <div className="login-err">{error}</div>}
+          <form onSubmit={handleLogin}>
+            <div className="login-field"><label>Email Address</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus /></div>
+            <div className="login-field"><label>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••••" required /></div>
+            <button className="login-btn" type="submit" disabled={loading}>{loading ? "Signing in…" : "Sign In"}</button>
+          </form>
+          <button onClick={() => { setStep("forgot"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "10px", marginTop: 4 }}>Forgot your password?</button>
+        </>)}
 
-          {stage === "mfa-verify" && (
-            <>
-              <div className="login-heading">Two-factor auth</div>
-              <div className="login-hint">Enter the 6-digit code from your authenticator app.</div>
-              {err && <div className="login-err">{err}</div>}
-              <div className="login-mfa-box">
-                <div className="login-mfa-title">Authenticator code</div>
-                <div className="login-mfa-sub">Open Google Authenticator or Authy</div>
-              </div>
-              <div className="mfa-digits">
-                {mfaCode.map((d, i) => (
-                  <input
-                    key={i}
-                    ref={el => digitRefs.current[i] = el}
-                    className="mfa-digit"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={d}
-                    onChange={e => handleDigit(i, e.target.value)}
-                    onKeyDown={e => handleDigitKey(i, e)}
-                  />
-                ))}
-              </div>
-              <button className="login-btn" onClick={handleMfaVerify} disabled={loading || mfaCode.join("").length < 6}>
-                {loading ? "Verifying…" : "Verify"}
-              </button>
-              <button className="login-link" onClick={() => { setStage("login"); setMfaCode(["","","","","",""]); }}>Back to sign in</button>
-            </>
-          )}
+        {step === "forgot" && (<>
+          <p className="login-sub">Reset your password</p>
+          {error && <div className="login-err">{error}</div>}
+          <form onSubmit={handleForgotPassword}>
+            <div className="login-field"><label>Email Address</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus /></div>
+            <button className="login-btn" type="submit" disabled={loading}>{loading ? "Sending…" : "Send Reset Link"}</button>
+          </form>
+          <button onClick={() => { setStep("login"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "10px", marginTop: 4 }}>Back to login</button>
+        </>)}
 
-          {stage === "mfa-enroll" && (
-            <>
-              <div className="login-heading">Set up 2FA</div>
-              <div className="login-hint">Two-factor authentication is required. You'll need an authenticator app.</div>
-              {err && <div className="login-err">{err}</div>}
-              <div className="login-mfa-box">
-                <div className="login-mfa-title">Required for your account</div>
-                <div className="login-mfa-sub">Download Google Authenticator or Authy, then continue</div>
-              </div>
-              <button className="login-btn" onClick={handleMfaEnroll} disabled={loading}>
-                {loading ? "Setting up…" : "Continue with authenticator"}
-              </button>
-            </>
-          )}
-
-          {stage === "mfa-setup" && (
-            <>
-              <div className="login-heading">Scan QR code</div>
-              <div className="login-hint">Scan this with your authenticator app, then enter the 6-digit code.</div>
-              {err && <div className="login-err">{err}</div>}
-              {sessionData?.qr && (
-                <div style={{ textAlign: "center", margin: "16px 0" }}>
-                  <img src={sessionData.qr} alt="QR code" style={{ width: 180, height: 180, border: "1px solid var(--border)", borderRadius: 8, display: "block", margin: "0 auto" }} onError={e => e.target.style.display="none"} /><p style={{ fontSize: 12, color: "var(--sub)", marginTop: 8 }}>If the QR code does not appear, use the secret key below to add manually.</p>
-                </div>
-              )}
-              {sessionData?.secret && (
-                <div style={{ background: "var(--mist)", borderRadius: 8, padding: "10px 14px", fontFamily: "monospace", fontSize: 13, textAlign: "center", marginBottom: 16, wordBreak: "break-all", color: "var(--sub)" }}>
-                  {sessionData.secret}
-                </div>
-              )}
-              <div className="mfa-digits">
-                {mfaCode.map((d, i) => (
-                  <input
-                    key={i}
-                    ref={el => digitRefs.current[i] = el}
-                    className="mfa-digit"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={d}
-                    onChange={e => handleDigit(i, e.target.value)}
-                    onKeyDown={e => handleDigitKey(i, e)}
-                  />
-                ))}
-              </div>
-              <button className="login-btn" onClick={() => handleMfaVerifyCode(mfaCode.join(""))} disabled={loading || mfaCode.join("").length < 6}>
-                {loading ? "Verifying…" : "Activate 2FA"}
-              </button>
-            </>
-          )}
-
-          {stage === "forgot" && (
-            <>
-              <div className="login-heading">Reset password</div>
-              <div className="login-hint">Enter your email and we'll send a temporary password.</div>
-              {err && <div className="login-err">{err}</div>}
-              {forgotSent
-                ? <div className="login-ok">Check your email — a temporary password has been sent.</div>
-                : (
-                  <>
-                    <div className="login-field">
-                      <label>Email</label>
-                      <input type="email" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} placeholder="you@company.com" autoFocus />
-                    </div>
-                    <button className="login-btn" onClick={async () => {
-                      setLoading(true); setErr("");
-                      try {
-                        const r = await fetch("/api/admin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "resetPassword", email: forgotEmail }) });
-                        const d = await r.json();
-                        if (d.error) throw new Error(d.error);
-                        await fetch("/api/send-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: forgotEmail, tempPassword: d.tempPass }) });
-                        setForgotSent(true);
-                      } catch (e) { setErr(e.message); }
-                      setLoading(false);
-                    }} disabled={loading || !forgotEmail}>
-                      {loading ? "Sending…" : "Send temporary password"}
-                    </button>
-                  </>
-                )
-              }
-              <button className="login-link" onClick={() => { setStage("login"); setForgotSent(false); setErr(""); }}>Back to sign in</button>
-            </>
-          )}
-
-          <div className="login-footer">
-            &copy; {new Date().getFullYear()} Cerect. All rights reserved.
+        {step === "forgot-sent" && (<>
+          <div style={{ textAlign: "center", padding: "20px 0" }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>📧</div>
+            <h3 style={{ color: "var(--navy)", fontFamily: "var(--fh)", marginBottom: 8 }}>Check your inbox</h3>
+            <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 20 }}>We sent a reset link to <strong>{email}</strong>.</p>
           </div>
-        </div>
+          <button className="login-btn" onClick={() => { setStep("login"); setError(""); }}>Back to Login</button>
+        </>)}
+
+        {step === "mfa-setup" && (<>
+          <p className="login-sub">One more step — secure your account</p>
+          <div style={{ background: "#EEF8FF", border: "1.5px solid #BDE0F5", borderRadius: 9, padding: 16, marginBottom: 16, fontSize: 13, color: "var(--navy)" }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>🔐 Set up two-factor authentication</div>
+            <p style={{ fontSize: 12, color: "var(--sub)", margin: "0 0 8px" }}>You'll be asked for a 6-digit code from an app on your phone each time you log in.</p>
+            <p style={{ fontSize: 12, color: "var(--sub)", margin: 0 }}><strong>You'll need:</strong> Google Authenticator or Authy (both free).</p>
+          </div>
+          {error && <div className="login-err">{error}</div>}
+          <button className="login-btn" onClick={handleSetupMFA} disabled={loading} style={{ marginBottom: 16 }}>{loading ? "Setting up…" : "Set Up Authenticator App →"}</button>
+          <div style={{ borderTop: "1px solid var(--mist2)", paddingTop: 12, textAlign: "center" }}>
+            <p style={{ fontSize: 11, color: "var(--sub)", marginBottom: 6 }}>Not ready? You can set this up later from the Users page.</p>
+            <button onClick={skipMFA} style={{ background: "none", border: "1px solid var(--mist2)", borderRadius: 6, color: "var(--sub)", fontSize: 11, cursor: "pointer", padding: "5px 12px" }}>Skip for now</button>
+          </div>
+        </>)}
+
+        {step === "mfa-enroll" && (<>
+          <p className="login-sub">Scan this QR code with your authenticator app</p>
+          {error && <div className="login-err">{error}</div>}
+          {qrCode && <div style={{ margin: "16px 0" }}><QRImage svgString={qrCode} /></div>}
+          {secret && (
+            <div style={{ background: "var(--mist)", borderRadius: 7, padding: "8px 12px", marginBottom: 14, fontSize: 11, color: "var(--sub)", textAlign: "center" }}>
+              Cannot scan? Enter manually:<br /><strong style={{ fontSize: 13, letterSpacing: 2, color: "var(--navy)" }}>{secret}</strong>
+            </div>
+          )}
+          <form onSubmit={handleVerifyMFA}>
+            <div className="login-field"><label>Enter 6-digit code from your app</label><input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e => setCode(e.target.value)} placeholder="000000" autoFocus style={{ textAlign: "center", letterSpacing: 4, fontSize: 20 }} /></div>
+            <button className="login-btn" type="submit" disabled={loading || code.replace(/\s/g, "").length < 6}>{loading ? "Verifying…" : "Verify & Enable MFA"}</button>
+          </form>
+        </>)}
+
+        {step === "mfa-verify" && (<>
+          <p className="login-sub">Enter the 6-digit code from your authenticator app</p>
+          {error && <div className="login-err">{error}</div>}
+          <form onSubmit={handleVerifyMFA}>
+            <div className="login-field"><label>Authentication Code</label><input type="text" inputMode="numeric" maxLength={7} value={code} onChange={e => setCode(e.target.value)} placeholder="000000" autoFocus style={{ textAlign: "center", letterSpacing: 4, fontSize: 20 }} /></div>
+            <button className="login-btn" type="submit" disabled={loading || code.replace(/\s/g, "").length < 6}>{loading ? "Verifying…" : "Verify"}</button>
+          </form>
+          <button onClick={() => { setStep("forgot"); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "8px", marginTop: 4 }}>Forgot password?</button>
+          <button onClick={() => { setStep("login"); setCode(""); setError(""); }} style={{ width: "100%", background: "none", border: "none", color: "var(--sub)", fontSize: 13, cursor: "pointer", padding: "4px" }}>Back to login</button>
+        </>)}
       </div>
     </div>
   );
@@ -4908,6 +4844,136 @@ function CalendarPage({ data, enquiries = [], tasks = [] }) {
   );
 }
 
+// ─── Data Tools Page ──────────────────────────────────────────────────────────
+function DataToolsPage({ data, orgId, token, toast }) {
+  function exportData() {
+    const rows = data.map(d => ({
+      "Unit ID": d.id, "Property/Label": d.label || "",
+      "Category": d.category, "Tenant": d.tenant || "",
+      "Address": d.address || "", "Email": d.email || "",
+      "Phone": d.phone || "", "Payment Method": d.payment || "",
+      "Rent Ex-VAT": d.rent || "", "Rent Inc-VAT": d.vat_rent || "",
+      "Status": SL[d.status] || d.status,
+      "Lock Deposit Paid": d.lock_deposit_paid || "",
+      "Lock Deposit Amount": d.lock_deposit_amount || "",
+      "Tenant Deposit": d.tenant_deposit || "",
+      "Key Number": d.key_number || "",
+      "Row/Location": d.row_name || "", "Box Number": d.box_no || "",
+      "Size": d.size || "", "Review Date": d.review || "",
+      "Move-in Date": d.move_in_date || "", "Notes": d.notes || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tenants");
+    XLSX.writeFile(wb, `Cerect_Export_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast("Export complete", "success");
+  }
+
+  async function fullBackup() {
+    if (!token) { toast("Not logged in", "error"); return; }
+    if (!window.confirm("This will create a zip file containing all tenant data and documents.\n\nThis may take a minute depending on how many documents you have.\n\nStart backup?")) return;
+    toast("⏳ Preparing backup — please wait…", "info");
+    try {
+      if (!window.JSZip) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+      const zip = new window.JSZip();
+
+      // Excel data
+      const rows = data.map(d => ({
+        "Unit ID": d.id, "Label": d.label || "", "Category": d.category,
+        "Tenant": d.tenant || "", "Email": d.email || "", "Phone": d.phone || "",
+        "Rent": d.rent || "", "Status": SL[d.status] || d.status,
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Cerect");
+      const excelBlob = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      zip.file("Cerect_Data.xlsx", excelBlob);
+
+      // Documents
+      const listR = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+        method: "POST",
+        headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prefix: "", limit: 500, delimiter: "/" }),
+      });
+      const folders = await listR.json();
+      let totalFiles = 0;
+
+      if (Array.isArray(folders)) {
+        for (const folder of folders) {
+          const folderName = (folder.name || "").replace(/\/$/, "");
+          if (!folderName || folderName === "archive") continue;
+          const tenant = data.find(t => {
+            const safe = (t.id || "").replace(/\s+/g, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+            return safe === folderName || t.id === folderName;
+          });
+          const folderLabel = tenant ? (tenant.tenant || tenant.label || folderName) : folderName;
+          const fr = await fetch(`${SUPABASE_URL}/storage/v1/object/list/documents`, {
+            method: "POST",
+            headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ prefix: folderName + "/", limit: 100 }),
+          });
+          const files = await fr.json();
+          if (!Array.isArray(files)) continue;
+          for (const file of files) {
+            if (!file.id) continue;
+            const filePath = `${folderName}/${file.name}`;
+            const signR = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/documents/${filePath}`, {
+              method: "POST",
+              headers: { ...BASE_H, Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ expiresIn: 300 }),
+            });
+            const signD = await signR.json();
+            if (!signD.signedURL) continue;
+            const fileR = await fetch(`${SUPABASE_URL}/storage/v1${signD.signedURL}`);
+            if (!fileR.ok) continue;
+            const blob = await fileR.blob();
+            const displayName = file.name.replace(/^\d+_/, "");
+            zip.folder(`Documents/${folderLabel}`).file(displayName, blob);
+            totalFiles++;
+            toast(`⏳ Adding file ${totalFiles}…`, "info");
+          }
+        }
+      }
+
+      toast("⏳ Creating zip file…", "info");
+      const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      const date = new Date().toISOString().slice(0, 10);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(zipBlob);
+      a.download = `Cerect_Backup_${date}.zip`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+      toast(`✅ Backup complete — ${totalFiles} document${totalFiles !== 1 ? "s" : ""} + data`, "success");
+    } catch (e) {
+      toast("❌ Backup failed — " + e.message, "error");
+    }
+  }
+
+  return (
+    <div className="page">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+        <div className="card">
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>📥 Export Tenant Data</div>
+          <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>Downloads all tenant records as an Excel spreadsheet. Includes all fields — rent, status, contacts, deposits, dates.</p>
+          <button className="sp-btn sp-btn-primary" onClick={exportData}>⬇️ Download as Excel</button>
+        </div>
+        <div className="card" style={{ border: "2px solid var(--gold)" }}>
+          <div style={{ fontFamily: "var(--fh)", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>🚨 Emergency Backup</div>
+          <p style={{ fontSize: 13, color: "var(--sub)", marginBottom: 16 }}>Downloads everything — all tenant data as a spreadsheet plus every document. Save this externally each week.</p>
+          <button className="sp-btn sp-btn-navy" onClick={fullBackup}>⬇️ Download Full Backup (Data + Documents)</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Onboarding Page ─────────────────────────────────────────────────────────
 function OnboardingPage({ session, onComplete }) {
   const [step, setStep] = useState(1);
@@ -5274,6 +5340,7 @@ const NAV = [
   { id: "calendar",  label: "Calendar",   icon: "calendar",  section: null },
   { id: "tasks",     label: "Tasks",      icon: "tasks",     section: null },
   { id: "documents", label: "Documents",  icon: "documents", section: "Data" },
+  { id: "datatools", label: "Data Tools",  icon: "settings",  section: null },
   { id: "archive",   label: "Archive",    icon: "archive",   section: null },
   { id: "users",     label: "Users",      icon: "users",     section: "Admin" },
   { id: "settings",  label: "Settings",   icon: "settings",  section: null },
@@ -5689,6 +5756,9 @@ export default function App() {
       );
       case "tasks": return (
         <TasksPage orgId={orgId} token={token} toast={toast} data={data} />
+      );
+      case "datatools": return (
+        <DataToolsPage data={data} orgId={orgId} token={token} toast={toast} />
       );
       case "documents": return (
         <DocumentsPage
