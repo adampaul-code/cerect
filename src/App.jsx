@@ -4358,10 +4358,7 @@ function EnquiriesPage({token,data,orgId}){
         headers:{...authH(token),Prefer:"return=minimal"},
         body:JSON.stringify({tenant:convertEnquiry.name,email:convertEnquiry.email||"",phone:convertEnquiry.phone||"",status:"new",move_in_date:new Date().toISOString().slice(0,10),notes:convertEnquiry.notes||""})
       });
-      // Update local data so tenants/site plan refreshes immediately
-      const updatedUnit={...unit,tenant:convertEnquiry.name,email:convertEnquiry.email||"",phone:convertEnquiry.phone||"",status:"new",move_in_date:new Date().toISOString().slice(0,10)};
-      if(typeof setData==="function") setData(d=>d.map(u=>u.id===convertUnit?updatedUnit:u));
-      // Mark enquiry as converted
+      // Update enquiry status and close
       await enquiryUpdate(convertEnquiry.id,{status:"converted"},token);
       setEnquiries(enq=>enq.map(e=>e.id===convertEnquiry.id?{...e,status:"converted"}:e));
       setConvertEnquiry(null);
