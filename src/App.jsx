@@ -5503,13 +5503,36 @@ export default function App(){
     if(!orgId){showToast("❌ Not logged in to an organisation");return;}
     showToast(`⏳ Importing ${rows.length} records…`);
     try{
-      // Add org_id to every row, clean empty strings, and remove columns that don't exist in Cerect
+      // Convert Excel serial date numbers to YYYY-MM-DD strings
+      function excelDateToISO(val) {
+        if(!val) return null;
+        const s = String(val).trim();
+        if(!s) return null;
+        // Already a date string
+        if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        if(/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+          const [d,m,y] = s.split('/');
+          return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+        }
+        // Excel serial number (e.g. 45632)
+        const num = Number(s);
+        if(!isNaN(num) && num > 1000 && num < 100000) {
+          const d = new Date(Date.UTC(1899, 11, 30) + num * 86400000);
+          return d.toISOString().slice(0, 10);
+        }
+        return s || null;
+      }
+
+      const DATE_COLS = new Set(['review','move_in_date','move_out_date','deleted_at']);
+
+      // Add org_id to every row, clean empty strings, remove columns that don't exist in Cerect, convert dates
       const VALID_COLS = new Set(['id','org_id','label','tenant','email','phone','payment','rent','vat_rent','status','category','row_name','box_no','size','review','notes','address','lock_deposit_paid','lock_deposit_amount','tenant_deposit','key_number','archived','deleted_at','deleted_data','sort_order','move_in_date','move_out_date']);
       const cleanRows = rows.map(row => {
         const clean = {...row, org_id: orgId, deleted_at: null, deleted_data: null, archived: false};
         Object.keys(clean).forEach(k => {
-          if(!VALID_COLS.has(k)) delete clean[k];
-          else if(clean[k]==="") clean[k]=null;
+          if(!VALID_COLS.has(k)) { delete clean[k]; return; }
+          if(clean[k]==="") { clean[k]=null; return; }
+          if(DATE_COLS.has(k) && clean[k]) clean[k] = excelDateToISO(clean[k]);
         });
         return clean;
       });
