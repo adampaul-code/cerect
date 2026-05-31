@@ -5831,19 +5831,21 @@ export default function App() {
     }
   }
 
-  if (!session) return <LoginPage onLogin={handleLogin} />;
+  if (!session) return <><style>{CSS}</style><LoginPage onLogin={handleLogin} /></>;
 
   if (orgLoading) return (
+    <><style>{CSS}</style>
     <div style={{ minHeight: "100vh", background: "var(--mist)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ textAlign: "center", color: "var(--sub)", fontSize: 14 }}>
         <div style={{ fontFamily: "var(--fh)", fontSize: 20, fontWeight: 700, color: "var(--navy)", marginBottom: 8 }}>cerect<span style={{ color: "var(--gold)" }}>.</span></div>
         Loading your account…
       </div>
     </div>
+    </>
   );
 
   if (needsOnboarding) return (
-    <OnboardingPage session={session} onComplete={handleOnboardingComplete} />
+    <><style>{CSS}</style><OnboardingPage session={session} onComplete={handleOnboardingComplete} /></>
   );
 
   return (
