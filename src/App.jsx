@@ -5829,14 +5829,16 @@ export default function App(){
         )) return;
       }
 
+      const VALID_TENANT_COLS = new Set(['id','org_id','label','tenant','email','phone','payment','rent','vat_rent','status','category','row_name','box_no','size','review','notes','address','lock_deposit_paid','lock_deposit_amount','tenant_deposit','key_number','archived','deleted_at','deleted_data','sort_order','move_in_date','move_out_date']);
+      const cleanedData = {};
+      Object.keys(tenantData).forEach(k => { if(VALID_TENANT_COLS.has(k)) cleanedData[k] = tenantData[k]; });
       const restored={
-        ...tenantData,
+        ...cleanedData,
         id: unitId,
         org_id: orgId,
         archived: false,
         deleted_at: null,
         deleted_data: null,
-        // Ensure key fields from original data are preserved
         category: tenantData.category || "Residential",
         label: tenantData.label || tenantData.tenant || unitId,
       };
