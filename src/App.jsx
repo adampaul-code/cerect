@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 
+
 // Cerect v2.1 — Multi-tenant Storage Management Platform
 const SUPABASE_URL = "https://lbealsgloqoepazfrgbj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZWFsc2dsb3FvZXBhemZyZ2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MzE4OTEsImV4cCI6MjA5NTEwNzg5MX0.r8bWBOmqQy9VDcyk6mCxxfK1bORFYBs1lHTVMRvETEY";
@@ -382,6 +383,45 @@ async function enquiryUpdate(id, data, token) {
 async function enquiryDelete(id, token) {
   await fetch(`${SUPABASE_URL}/rest/v1/enquiries?id=eq.${id}`, {
     method: "DELETE", headers: authH(token)
+  });
+}
+
+// ─── Booking helpers ─────────────────────────────────────────────────────────
+const BOOKING_STATUSES = {
+  pending: "⏳ Pending",
+  confirmed: "✅ Confirmed",
+  active: "🏠 Active",
+  completed: "✔️ Completed",
+  cancelled: "❌ Cancelled",
+};
+
+async function bookingList(token, orgId) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/bookings?org_id=eq.${orgId}&order=start_date.desc`, { headers: authH(token) });
+  return r.ok ? r.json() : [];
+}
+async function bookingSave(data, token, orgId) {
+  const clean = { ...data, org_id: orgId, updated_at: new Date().toISOString() };
+  if (!clean.end_date) clean.end_date = null;
+  if (!clean.customer_email) clean.customer_email = null;
+  if (!clean.customer_phone) clean.customer_phone = null;
+  if (!clean.unit_id) clean.unit_id = null;
+  if (!clean.notes) clean.notes = null;
+  if (!clean.deposit_amount) clean.deposit_amount = null;
+  if (!clean.monthly_rent) clean.monthly_rent = null;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/bookings`, {
+    method: "POST",
+    headers: { ...authH(token), Prefer: "return=representation" },
+    body: JSON.stringify(clean),
+  });
+  return r.ok ? r.json() : null;
+}
+async function bookingUpdate(id, data, token) {
+  const clean = { ...data, updated_at: new Date().toISOString() };
+  if (clean.end_date === "") clean.end_date = null;
+  await fetch(`${SUPABASE_URL}/rest/v1/bookings?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...authH(token), Prefer: "return=minimal" },
+    body: JSON.stringify(clean),
   });
 }
 
@@ -1136,7 +1176,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
+function Dashboard({data,enquiries=[],tasks=[],bookings=[],onEdit,onAdd,onDelete,onGoTo}){
   const res=data.filter(d=>d.category==="Residential");
   const com=data.filter(d=>d.category==="Commercial");
   const stor=data.filter(d=>d.category==="Storage");
@@ -1153,6 +1193,7 @@ function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
   // Waiting list demand
   const activeEnquiries=enquiries.filter(e=>e.status==="waiting"||e.status==="contacted"||e.status==="reserved");
   const reservedEnquiries=enquiries.filter(e=>e.status==="reserved");
+  const pendingBookings=bookings.filter(b=>b.status==="pending"||b.status==="confirmed");
   const enqByCategory={
     Storage:activeEnquiries.filter(e=>e.category==="Storage").length,
     Residential:activeEnquiries.filter(e=>e.category==="Residential").length,
@@ -1199,7 +1240,7 @@ function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
         <div className="kc"><div className="kl">Commercial Revenue</div><div className="kv">£{comRent.toLocaleString()}</div><div className="ks">{com.filter(u=>activeStatuses.includes(u.status)&&u.rent).length} units</div><div className="ki">🏢</div></div>
       </div>
       {/* Occupancy KPIs */}
-      <div className="kg" style={{gridTemplateColumns:"repeat(4,1fr)",marginTop:-6}}>
+      <div className="kg" style={{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",marginTop:-6}}>
         <div className="kc"><div className="kl">Storage Occupancy</div><div className="kv">{occ}/{stor.length}</div><div className="ks">{Math.round(occ/Math.max(stor.length,1)*100)}% occupied</div><div className="ki">📊</div></div>
         <div className="kc"><div className="kl">New This Month</div><div className="kv">{newC.length}</div><div className="ks">Currently onboarding</div><div className="ki">🟡</div></div>
         <div className="kc"><div className="kl">Attention Required</div><div className="kv">{arrears.length+leaving.length}</div><div className="ks">{arrears.length} arrears · {leaving.length} leaving</div><div className="ki">⚠️</div></div>
@@ -1216,6 +1257,12 @@ function Dashboard({data,enquiries=[],tasks=[],onEdit,onAdd,onDelete,onGoTo}){
             {activeEnquiries.length===0&&"No active enquiries"}
           </div>
           <div className="ki">📋</div>
+        </div>
+        <div className="kc" style={{cursor:"pointer"}} onClick={()=>onGoTo&&onGoTo("bookings")}>
+          <div className="kl">Online Bookings</div>
+          <div className="kv">{pendingBookings.length}</div>
+          <div className="ks">{pendingBookings.length>0?"Awaiting move-in":"No pending bookings"}</div>
+          <div className="ki">📅</div>
         </div>
       </div>
       <div className="g3">
@@ -2025,9 +2072,18 @@ function Payments({data, token, showToast, onStatusUpdate, orgId, onAudit}){
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           {isCurrentMonth && isOverdueMonth && overdueCount > 0 && (
-            <div style={{background:"#FFF0EE",border:"1.5px solid #FFCDD2",borderRadius:8,padding:"7px 14px",fontSize:13,color:"var(--danger)",fontWeight:600}}>
-              ⚠️ {overdueCount} tenant{overdueCount!==1?"s":""} not yet marked paid
-            </div>
+            <>
+              <div style={{background:"#FFF0EE",border:"1.5px solid #FFCDD2",borderRadius:8,padding:"7px 14px",fontSize:13,color:"var(--danger)",fontWeight:600}}>
+                ⚠️ {overdueCount} tenant{overdueCount!==1?"s":""} not yet marked paid
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={async()=>{
+                if(!window.confirm(`Flag ${overdueCount} unpaid tenant${overdueCount!==1?"s":""} as In Arrears?`)) return;
+                for(const u of unpaid){
+                  if(u.status!=="arrears"&&onStatusUpdate) await onStatusUpdate(u.id,"arrears");
+                }
+                showToast(`⚠️ ${overdueCount} tenant${overdueCount!==1?"s":""} flagged as arrears`);
+              }}>Flag overdue as arrears</button>
+            </>
           )}
         </div>
       </div>
@@ -4768,6 +4824,374 @@ function EnquiriesPage({token,data,orgId,onDataRefresh,showToast,onAudit}){
   );
 }
 
+// ─── Bookings Page ───────────────────────────────────────────────────────────
+const BLANK_BOOKING = {
+  customer_name: "", customer_email: "", customer_phone: "",
+  category: "Storage", unit_id: "", start_date: "", end_date: "",
+  status: "pending", deposit_amount: "", monthly_rent: "", notes: "",
+};
+
+function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState("active");
+  const [catFilter, setCatFilter] = useState("all");
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [form, setForm] = useState({ ...BLANK_BOOKING });
+  const [saving, setSaving] = useState(false);
+  const [dbError, setDbError] = useState(false);
+
+  const u = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+  const activeStatuses = ["pending", "confirmed", "active"];
+
+  useEffect(() => {
+    bookingList(token, orgId)
+      .then(d => { setBookings(Array.isArray(d) ? d : []); setDbError(false); })
+      .catch(() => { setDbError(true); setBookings([]); })
+      .finally(() => setLoading(false));
+  }, [token, orgId]);
+
+  async function reload() {
+    const d = await bookingList(token, orgId);
+    setBookings(Array.isArray(d) ? d : []);
+  }
+
+  const filtered = bookings.filter(b => {
+    if (statusFilter === "active" && !activeStatuses.includes(b.status)) return false;
+    if (statusFilter === "done" && !["completed", "cancelled"].includes(b.status)) return false;
+    if (catFilter !== "all" && b.category !== catFilter) return false;
+    return true;
+  });
+
+  function vacantUnits(category) {
+    return (data || []).filter(u =>
+      (u.status === "available" || u.status === "pending") &&
+      (!category || u.category === category)
+    );
+  }
+
+  function openAdd() {
+    setForm({ ...BLANK_BOOKING, start_date: new Date().toISOString().slice(0, 10) });
+    setEditItem(null);
+    setShowForm(true);
+  }
+
+  function openEdit(b) {
+    setForm({ ...b, start_date: b.start_date || "", end_date: b.end_date || "" });
+    setEditItem(b);
+    setShowForm(true);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    if (editItem) {
+      await bookingUpdate(editItem.id, form, token);
+    } else {
+      if (form.unit_id) {
+        const unit = data.find(u => u.id === form.unit_id);
+        if (unit && unit.status === "available") {
+          await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(form.unit_id)}&org_id=eq.${orgId}`, {
+            method: "PATCH",
+            headers: { ...authH(token), Prefer: "return=minimal" },
+            body: JSON.stringify({ status: "pending" }),
+          });
+        }
+      }
+      await bookingSave({ ...form, source: "admin" }, token, orgId);
+    }
+    await reload();
+    if (onReload) onReload();
+    setShowForm(false);
+    setSaving(false);
+    showToast(editItem ? "✅ Booking updated" : "✅ Booking created");
+  }
+
+  async function handleActivate(booking) {
+    if (!booking.unit_id) { alert("Assign a unit before activating."); return; }
+    if (!window.confirm(`Activate booking for ${booking.customer_name} in unit ${booking.unit_id}?`)) return;
+    const unit = data.find(u => u.id === booking.unit_id);
+    if (!unit) { alert("Unit not found."); return; }
+    await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(booking.unit_id)}&org_id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=minimal" },
+      body: JSON.stringify({
+        tenant: booking.customer_name,
+        email: booking.customer_email || "",
+        phone: booking.customer_phone || "",
+        status: "new",
+        move_in_date: booking.start_date,
+        rent: booking.monthly_rent || unit.rent,
+        notes: booking.notes || "",
+      }),
+    });
+    await bookingUpdate(booking.id, { status: "active" }, token);
+    await reload();
+    if (onReload) onReload();
+    showToast(`✅ ${booking.customer_name} moved into unit ${booking.unit_id}`);
+  }
+
+  async function handleCancel(booking) {
+    if (!window.confirm(`Cancel booking for ${booking.customer_name}?`)) return;
+    if (booking.unit_id) {
+      const unit = data.find(u => u.id === booking.unit_id);
+      if (unit && unit.status === "pending") {
+        await fetch(`${SUPABASE_URL}/rest/v1/tenants?id=eq.${encodeURIComponent(booking.unit_id)}&org_id=eq.${orgId}`, {
+          method: "PATCH",
+          headers: { ...authH(token), Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "available", tenant: null, email: null, phone: null }),
+        });
+      }
+    }
+    await bookingUpdate(booking.id, { status: "cancelled" }, token);
+    await reload();
+    if (onReload) onReload();
+    showToast("Booking cancelled");
+  }
+
+  async function handleDeposit(booking) {
+    const amount = Number(booking.deposit_amount) || 0;
+    if (!amount) { alert("Set a deposit amount first."); return; }
+    try {
+      const r = await fetch("/api/stripe-checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bookingId: booking.id,
+          amount,
+          customerEmail: booking.customer_email,
+          orgName: org?.name,
+          description: `Deposit — ${booking.customer_name} (${booking.unit_id || booking.category})`,
+        }),
+      });
+      const d = await r.json();
+      if (d.url) window.open(d.url, "_blank");
+      else alert(d.error || "Could not start payment");
+    } catch { alert("Payment service unavailable"); }
+  }
+
+  const publicUrl = org?.slug ? `${window.location.origin}/book/${org.slug}` : null;
+
+  if (dbError) return (
+    <div className="card" style={{ padding: 24 }}>
+      <div className="ct">Bookings table not set up</div>
+      <p className="tsub" style={{ marginTop: 8 }}>Run <code>supabase/migrations/001_bookings.sql</code> in your <a href="https://supabase.com/dashboard/project/lbealsgloqoepazfrgbj/sql/new" target="_blank" rel="noreferrer">Supabase SQL editor</a>.</p>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="fr" style={{ justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div className="ct">Bookings</div>
+          <p className="tsub tsm">Manage online and in-person reservations — compete with Stora & Storeganise.</p>
+        </div>
+        <div className="fr" style={{ gap: 8 }}>
+          {publicUrl && (
+            <button className="btn btn-outline btn-sm" onClick={() => { navigator.clipboard.writeText(publicUrl); showToast("📋 Public booking link copied"); }}>
+              🔗 Copy public link
+            </button>
+          )}
+          <button className="btn btn-primary btn-sm" onClick={openAdd}>+ New booking</button>
+        </div>
+      </div>
+
+      <div className="fr" style={{ gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["active", "Active"], ["done", "Completed"], ["all", "All"]].map(([k, l]) => (
+          <button key={k} className={`btn btn-sm ${statusFilter === k ? "btn-primary" : "btn-outline"}`} onClick={() => setStatusFilter(k)}>{l}</button>
+        ))}
+        <select value={catFilter} onChange={e => setCatFilter(e.target.value)} style={{ marginLeft: 8, fontFamily: "var(--fb)", fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1.5px solid #E4EAF2" }}>
+          <option value="all">All types</option>
+          {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {loading ? <div className="loading">Loading bookings…</div> : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="tw"><table>
+            <thead><tr>
+              <th>Customer</th><th>Type</th><th>Unit</th><th>Start</th><th>End</th>
+              <th>Rent</th><th>Deposit</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr><td colSpan={9} style={{ textAlign: "center", padding: 32, color: "var(--sub)" }}>No bookings yet — share your public link to get started</td></tr>
+              )}
+              {filtered.map(b => (
+                <tr key={b.id}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{b.customer_name}</div>
+                    <div style={{ fontSize: 11, color: "var(--sub)" }}>{b.customer_email} {b.customer_phone && `· ${b.customer_phone}`}</div>
+                  </td>
+                  <td>{b.category}</td>
+                  <td>{b.unit_id || "—"}</td>
+                  <td>{b.start_date ? new Date(b.start_date).toLocaleDateString("en-GB") : "—"}</td>
+                  <td>{b.end_date ? new Date(b.end_date).toLocaleDateString("en-GB") : "—"}</td>
+                  <td>{b.monthly_rent ? `£${b.monthly_rent}` : "—"}</td>
+                  <td>
+                    {b.deposit_amount ? `£${b.deposit_amount}` : "—"}
+                    {b.deposit_paid && <span style={{ color: "#27AE60", fontSize: 11 }}> ✓</span>}
+                  </td>
+                  <td><span style={{ fontSize: 12 }}>{BOOKING_STATUSES[b.status] || b.status}</span></td>
+                  <td>
+                    <div className="fr" style={{ gap: 4, flexWrap: "wrap" }}>
+                      <button className="btn btn-outline btn-sm" onClick={() => openEdit(b)}>Edit</button>
+                      {b.status === "pending" && <button className="btn btn-outline btn-sm" onClick={() => bookingUpdate(b.id, { status: "confirmed" }, token).then(reload)}>Confirm</button>}
+                      {["pending", "confirmed"].includes(b.status) && <button className="btn btn-primary btn-sm" onClick={() => handleActivate(b)}>Move in</button>}
+                      {b.deposit_amount && !b.deposit_paid && <button className="btn btn-outline btn-sm" onClick={() => handleDeposit(b)}>💳 Deposit</button>}
+                      {activeStatuses.includes(b.status) && <button className="btn btn-outline btn-sm" onClick={() => handleCancel(b)}>Cancel</button>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+      )}
+
+      {showForm && (
+        <div className="modal-ov" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
+          <div className="modal">
+            <div className="mh">
+              <div className="mt">{editItem ? "Edit booking" : "New booking"}</div>
+              <button className="mc" onClick={() => setShowForm(false)}>✕</button>
+            </div>
+            <div className="mb-m">
+              <div className="fg">
+                <div className="fgi"><label>Customer name *</label><input value={form.customer_name} onChange={u("customer_name")} /></div>
+                <div className="fgi"><label>Email</label><input value={form.customer_email} onChange={u("customer_email")} /></div>
+                <div className="fgi"><label>Phone</label><input value={form.customer_phone} onChange={u("customer_phone")} /></div>
+                <div className="fgi"><label>Category</label>
+                  <select value={form.category} onChange={u("category")}>
+                    {["Storage", "Residential", "Commercial"].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="fgi"><label>Unit</label>
+                  <select value={form.unit_id} onChange={u("unit_id")}>
+                    <option value="">— None / TBC —</option>
+                    {vacantUnits(form.category).map(u => <option key={u.id} value={u.id}>{u.label || u.id} {u.rent ? `(£${u.rent}/mo)` : ""}</option>)}
+                  </select>
+                </div>
+                <div className="fgi"><label>Start date *</label><input type="date" value={form.start_date} onChange={u("start_date")} /></div>
+                <div className="fgi"><label>End date</label><input type="date" value={form.end_date} onChange={u("end_date")} /></div>
+                <div className="fgi"><label>Monthly rent (£)</label><input type="number" value={form.monthly_rent} onChange={u("monthly_rent")} /></div>
+                <div className="fgi"><label>Deposit (£)</label><input type="number" value={form.deposit_amount} onChange={u("deposit_amount")} /></div>
+                <div className="fgi"><label>Status</label>
+                  <select value={form.status} onChange={u("status")}>
+                    {Object.keys(BOOKING_STATUSES).map(s => <option key={s} value={s}>{BOOKING_STATUSES[s]}</option>)}
+                  </select>
+                </div>
+                <div className="fgi full"><label>Notes</label><textarea rows={3} value={form.notes} onChange={u("notes")} /></div>
+              </div>
+            </div>
+            <div className="mf">
+              <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSave} disabled={saving || !form.customer_name || !form.start_date}>
+                {saving ? "Saving…" : "Save booking"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Growth & Online ──────────────────────────────────────────────────────────
+function GrowthPage({ org, showToast }) {
+  const bookingUrl = org?.slug ? `${window.location.origin}/book/${org.slug}` : null;
+  const portalUrl = org?.slug ? `${window.location.origin}/portal/${org.slug}` : null;
+  const embedCode = bookingUrl ? `<a href="${bookingUrl}" style="display:inline-block;padding:12px 24px;background:#1B2B4B;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Book online</a>` : null;
+
+  const features = [
+    { name: "Online booking page", cerect: true, stora: true, storeganise: true },
+    { name: "Customer self-service portal", cerect: true, stora: true, storeganise: true },
+    { name: "Stripe deposit payments", cerect: true, stora: true, storeganise: true },
+    { name: "Multi-property (Storage + Residential + Commercial)", cerect: true, stora: false, storeganise: false },
+    { name: "Payment reconciliation & arrears tracking", cerect: true, stora: true, storeganise: true },
+    { name: "Tasks, documents & audit log", cerect: true, stora: false, storeganise: false },
+    { name: "E-signatures", cerect: false, stora: true, storeganise: true },
+    { name: "Access control integrations", cerect: false, stora: true, storeganise: true },
+    { name: "Marketing website builder", cerect: false, stora: true, storeganise: false },
+  ];
+
+  function copy(text, label) {
+    navigator.clipboard.writeText(text);
+    showToast(`📋 ${label} copied`);
+  }
+
+  return (
+    <div>
+      <div className="ct" style={{ marginBottom: 4 }}>Growth & Online</div>
+      <p className="tsub tsm" style={{ marginBottom: 24 }}>Your online presence — share these links on your website, Google listing, or social media.</p>
+
+      <div className="g2" style={{ marginBottom: 24 }}>
+        <div className="card">
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Public booking page</div>
+          <p className="tsub tsm" style={{ marginBottom: 12 }}>Customers browse available units and request a booking 24/7.</p>
+          {bookingUrl ? (
+            <>
+              <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{bookingUrl}</code>
+              <div className="fr" style={{ gap: 8 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")}>Copy link</button>
+                <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
+              </div>
+            </>
+          ) : <p className="tsub tsm">Complete onboarding to get your booking link.</p>}
+        </div>
+        <div className="card">
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>👤 Customer portal</div>
+          <p className="tsub tsm" style={{ marginBottom: 12 }}>Tenants view their unit, rent, and payment history by email — no login required.</p>
+          {portalUrl ? (
+            <>
+              <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{portalUrl}</code>
+              <div className="fr" style={{ gap: 8 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")}>Copy link</button>
+                <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
+              </div>
+            </>
+          ) : <p className="tsub tsm">Complete onboarding to get your portal link.</p>}
+        </div>
+      </div>
+
+      {embedCode && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>🔗 Website embed button</div>
+          <p className="tsub tsm" style={{ marginBottom: 12 }}>Paste this HTML into your website to add a &quot;Book online&quot; button.</p>
+          <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 11, wordBreak: "break-all", marginBottom: 10 }}>{embedCode}</code>
+          <button className="btn btn-outline btn-sm" onClick={() => copy(embedCode, "Embed code")}>Copy embed code</button>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>💳 Stripe deposits</div>
+        <p className="tsub tsm" style={{ marginBottom: 12 }}>
+          Collect booking deposits via Stripe Checkout. Add <code>STRIPE_SECRET_KEY</code> and <code>APP_URL</code> to your Vercel environment variables, then use the &quot;Deposit&quot; button on any booking.
+        </p>
+        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "12px 14px", fontSize: 13, color: "#7A5C00" }}>
+          Coming next: recurring rent billing, automated late fees, and e-signatures.
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ fontWeight: 700, marginBottom: 12 }}>Cerect vs Stora vs Storeganise</div>
+        <div className="tw"><table>
+          <thead><tr><th>Feature</th><th>Cerect</th><th>Stora</th><th>Storeganise</th></tr></thead>
+          <tbody>
+            {features.map(f => (
+              <tr key={f.name}>
+                <td>{f.name}</td>
+                <td style={{ textAlign: "center" }}>{f.cerect ? "✅" : "—"}</td>
+                <td style={{ textAlign: "center" }}>{f.stora ? "✅" : "—"}</td>
+                <td style={{ textAlign: "center" }}>{f.storeganise ? "✅" : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Super Admin Page ─────────────────────────────────────────────────────────
 function SuperAdminPage({ token, session, onImpersonate }) {
@@ -5391,13 +5815,14 @@ function OnboardingPage({ session, onComplete }) {
 // ─── App Shell ────────────────────────────────────────────────────────────────
 const NAV=[
   {section:"Overview"},{id:"dashboard",label:"Dashboard",icon:"📊"},
-  {section:"Property"},{id:"site",label:"Site Plan",icon:"🗺️"},{id:"tenants",label:"All Tenants",icon:"👥"},{id:"enquiries",label:"Enquiries",icon:"📋"},
+  {section:"Property"},{id:"site",label:"Site Plan",icon:"🗺️"},{id:"tenants",label:"All Tenants",icon:"👥"},{id:"enquiries",label:"Enquiries",icon:"📋"},{id:"bookings",label:"Bookings",icon:"📅"},
   {section:"Finance"},{id:"payments",label:"Payments",icon:"🧾"},{id:"calendar",label:"Calendar",icon:"📅"},
+  {section:"Growth"},{id:"growth",label:"Growth & Online",icon:"🚀"},
   {section:"Operations"},{id:"tasks",label:"Tasks & Jobs",icon:"🔧"},
   {section:"Data"},{id:"documents",label:"Documents",icon:"📁"},{id:"tools",label:"Import / Export",icon:"📂"},
   {section:"Admin"},{id:"archive",label:"Archive",icon:"📦"},{id:"users",label:"Users & Security",icon:"🔐"},
 ];
-const TITLES={dashboard:"Dashboard",site:"Site Plan",tenants:"All Tenants",enquiries:"Enquiries",payments:"Payments",calendar:"Calendar",tasks:"Tasks & Jobs",documents:"Documents",tools:"Import / Export",archive:"Archive",users:"Users & Security"};
+const TITLES={dashboard:"Dashboard",site:"Site Plan",tenants:"All Tenants",enquiries:"Enquiries",bookings:"Bookings",payments:"Payments",calendar:"Calendar",growth:"Growth & Online",tasks:"Tasks & Jobs",documents:"Documents",tools:"Import / Export",archive:"Archive",users:"Users & Security"};
 
 export default function App(){
   const [session,setSession]=useState(()=>{
@@ -5417,6 +5842,7 @@ export default function App(){
   const [data,setData]=useState([]);
   const [areas,setAreas]=useState([]);
   const [enquiries,setEnquiries]=useState([]);
+  const [bookings,setBookings]=useState([]);
   const [tasks,setTasks]=useState([]);
   const [loading,setLoading]=useState(true);
   const [editItem,setEditItem]=useState(null);
@@ -5431,6 +5857,20 @@ export default function App(){
   const orgId = impersonating ? impersonating.org.id : org?.id;
   const activeOrg = impersonating ? impersonating.org : org;
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),3200);};
+
+  // Confirm Stripe deposit after redirect
+  useEffect(()=>{
+    const params=new URLSearchParams(window.location.search);
+    const bookingStatus=params.get("booking");
+    const bookingId=params.get("id");
+    if(bookingStatus==="success"&&bookingId){
+      fetch("/api/stripe-confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({bookingId})})
+        .then(r=>r.json())
+        .then(d=>{if(d.paid) showToast("✅ Deposit payment confirmed");})
+        .catch(()=>{});
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Offline detection
   useEffect(()=>{
@@ -5505,18 +5945,20 @@ export default function App(){
   }, [session?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleImpersonate(targetOrg) {
-    setImpersonating({ org: targetOrg, prevData: data, prevAreas: areas, prevEnquiries: enquiries, prevTasks: tasks });
+    setImpersonating({ org: targetOrg, prevData: data, prevAreas: areas, prevEnquiries: enquiries, prevBookings: bookings, prevTasks: tasks });
     setLoading(true);
     try {
-      const [rows, areaRows, enqRows, taskRows] = await Promise.all([
+      const [rows, areaRows, enqRows, bookRows, taskRows] = await Promise.all([
         dbGet(token, targetOrg.id),
         areasGet(token, targetOrg.id),
         enquiryList(token, targetOrg.id),
+        bookingList(token, targetOrg.id).catch(() => []),
         taskList(token, targetOrg.id).catch(() => []),
       ]);
       setData(Array.isArray(rows) ? rows : []);
       setAreas(Array.isArray(areaRows) ? areaRows : []);
       setEnquiries(Array.isArray(enqRows) ? enqRows : []);
+      setBookings(Array.isArray(bookRows) ? bookRows : []);
       setTasks(Array.isArray(taskRows) ? taskRows : []);
     } catch {}
     setLoading(false);
@@ -5529,6 +5971,7 @@ export default function App(){
     setData(impersonating.prevData);
     setAreas(impersonating.prevAreas);
     setEnquiries(impersonating.prevEnquiries);
+    setBookings(impersonating.prevBookings || []);
     setTasks(impersonating.prevTasks);
     setImpersonating(null);
     setPage("superadmin");
@@ -5543,7 +5986,7 @@ export default function App(){
     setImpersonating(null);
     setIsSuperAdmin(false);
     setOrgLocked(null);
-    setData([]); setAreas([]); setEnquiries([]); setTasks([]);
+    setData([]); setAreas([]); setEnquiries([]); setBookings([]); setTasks([]);
     try{localStorage.removeItem("cerect_session");}catch{}
   }
 
@@ -5578,14 +6021,16 @@ export default function App(){
   const loadData=useCallback(async()=>{
     if(!token || !orgId){setLoading(false);return;}
     try{
-      const [rows, areaRows, enqRows, taskRows]=await Promise.all([
+      const [rows, areaRows, enqRows, bookRows, taskRows]=await Promise.all([
         dbGet(token, orgId),
         areasGet(token, orgId),
         enquiryList(token, orgId),
+        bookingList(token, orgId).catch(()=>[]),
         taskList(token, orgId).catch(()=>[])
       ]);
       setData(Array.isArray(rows) ? rows : []);
       setEnquiries(Array.isArray(enqRows)?enqRows:[]);
+      setBookings(Array.isArray(bookRows)?bookRows:[]);
       setTasks(Array.isArray(taskRows)?taskRows:[]);
       if(areaRows&&Array.isArray(areaRows)){
         setAreas(areaRows);
@@ -6219,7 +6664,9 @@ export default function App(){
               ?<div className="loading">⏳ Loading your data…</div>
               :<>
                 {page==="superadmin"&&isSuperAdmin&&<SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate}/>}
-                {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
+                {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} bookings={bookings} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
+                {page==="bookings"&&<BookingsPage token={token} data={data} orgId={orgId} org={activeOrg} showToast={showToast} onReload={loadData}/>}
+                {page==="growth"&&<GrowthPage org={activeOrg} showToast={showToast}/>}
                 {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow} showToast={showToast}
                   onSaveAreaOrder={async(names)=>{await areasUpdateOrder(names,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);}}
                   onAddArea={async(name)=>{await areasUpsert(name,"Storage",areas.length,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);showToast(`✅ Area "${name}" created`);}}
