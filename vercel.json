@@ -2,6 +2,8 @@
   "buildCommand": "npm run build",
   "outputDirectory": "build",
   "rewrites": [
+    { "source": "/api/public-booking/:slug", "destination": "/api/public-booking?slug=:slug" },
+    { "source": "/api/customer-portal/:slug", "destination": "/api/customer-portal?slug=:slug" },
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/book/:path*", "destination": "/index.html" },
     { "source": "/portal/:path*", "destination": "/index.html" },
