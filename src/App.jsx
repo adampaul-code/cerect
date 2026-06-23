@@ -247,9 +247,27 @@ function OnlineLinksCard({ org, showToast, onGoTo }) {
   const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
   const portalUrl = slug ? `${window.location.origin}/portal/${slug}` : null;
 
-  function copy(text, label) {
-    navigator.clipboard.writeText(text);
-    showToast(`📋 ${label} copied`);
+  function copyText(text, label) {
+    const done = () => showToast(`📋 ${label} copied`);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        done();
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done();
+    }
   }
 
   if (!bookingUrl) {
@@ -276,7 +294,7 @@ function OnlineLinksCard({ org, showToast, onGoTo }) {
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--sub)", marginBottom: 6 }}>BOOKING PAGE</div>
           <code style={{ display: "block", fontSize: 11, wordBreak: "break-all", marginBottom: 10, color: "var(--navy)" }}>{bookingUrl}</code>
           <div className="fr" style={{ gap: 6 }}>
-            <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")}>Copy</button>
+            <button className="btn btn-primary btn-sm" onClick={() => copyText(bookingUrl, "Booking link")}>Copy</button>
             <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Open</a>
           </div>
         </div>
@@ -284,7 +302,7 @@ function OnlineLinksCard({ org, showToast, onGoTo }) {
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--sub)", marginBottom: 6 }}>CUSTOMER PORTAL</div>
           <code style={{ display: "block", fontSize: 11, wordBreak: "break-all", marginBottom: 10, color: "var(--navy)" }}>{portalUrl}</code>
           <div className="fr" style={{ gap: 6 }}>
-            <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")}>Copy</button>
+            <button className="btn btn-primary btn-sm" onClick={() => copyText(portalUrl, "Portal link")}>Copy</button>
             <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Open</a>
           </div>
         </div>
@@ -5187,16 +5205,23 @@ function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
 function GrowthPage({ org, token, showToast, onOrgUpdate }) {
   const [slugInput, setSlugInput] = useState(orgPublicSlug(org) || "");
   const [savingSlug, setSavingSlug] = useState(false);
+  const [linksSaved, setLinksSaved] = useState(!!org?.slug);
 
   useEffect(() => {
     const suggested = orgPublicSlug(org) || slugFromName(org?.name) || "";
     setSlugInput(suggested);
+    if (org?.slug) setLinksSaved(true);
     if (org?.id && token && !org?.slug && suggested) {
       ensureOrgSlug(org, token).then(updated => {
-        if (updated?.slug && onOrgUpdate) onOrgUpdate(updated);
+        if (updated?.slug) {
+          setLinksSaved(true);
+          if (onOrgUpdate) onOrgUpdate(updated);
+        }
       });
     }
   }, [org?.id, org?.slug, org?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const linksReady = linksSaved || !!org?.slug;
 
   const slug = slugInput.trim() || orgPublicSlug(org);
   const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
@@ -5215,10 +5240,14 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
         body: JSON.stringify({ slug: clean }),
       });
       if (!r.ok) throw new Error("Could not save");
-      const rows = await r.json();
-      const updated = Array.isArray(rows) ? rows[0] : { ...org, slug: clean };
+      let updated = { ...org, slug: clean };
+      try {
+        const rows = await r.json();
+        if (Array.isArray(rows) && rows[0]) updated = { ...updated, ...rows[0], slug: clean };
+      } catch {}
       if (onOrgUpdate) onOrgUpdate(updated);
       setSlugInput(clean);
+      setLinksSaved(true);
       showToast("✅ Your public links are ready");
     } catch {
       showToast("❌ Could not save link — try a different name");
@@ -5227,8 +5256,26 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
   }
 
   function copy(text, label) {
-    navigator.clipboard.writeText(text);
-    showToast(`📋 ${label} copied`);
+    const done = () => showToast(`📋 ${label} copied`);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        done();
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done();
+    }
   }
 
   return (
@@ -5255,9 +5302,14 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
             {savingSlug ? "Saving…" : org?.slug ? "Update links" : "Create links"}
           </button>
         </div>
-        {!org?.slug && slugInput && (
+        {!linksReady && slugInput && (
           <p className="tsub tsm" style={{ marginTop: 12, marginBottom: 0, color: "#7A5C00" }}>
             Click <strong>Create links</strong> to save — then your booking and portal URLs will appear below.
+          </p>
+        )}
+        {linksReady && (
+          <p className="tsub tsm" style={{ marginTop: 12, marginBottom: 0, color: "var(--success)", fontWeight: 600 }}>
+            ✓ Your links are live — copy and share them below.
           </p>
         )}
       </div>
@@ -5270,10 +5322,10 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{bookingUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")} disabled={!org?.slug}>Copy link</button>
-                <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none", opacity: org?.slug ? 1 : 0.5, pointerEvents: org?.slug ? "auto" : "none" }}>Preview →</a>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")}>Copy link</button>
+                <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
               </div>
-              {!org?.slug && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Save your link name above first.</p>}
+              {!linksReady && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Click <strong>Create links</strong> above to activate.</p>}
             </>
           ) : (
             <p className="tsub tsm">Enter a link name above, then click <strong>Create links</strong>.</p>
@@ -5286,10 +5338,10 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{portalUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")} disabled={!org?.slug}>Copy link</button>
-                <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none", opacity: org?.slug ? 1 : 0.5, pointerEvents: org?.slug ? "auto" : "none" }}>Preview →</a>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")}>Copy link</button>
+                <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
               </div>
-              {!org?.slug && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Save your link name above first.</p>}
+              {!linksReady && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Click <strong>Create links</strong> above to activate.</p>}
             </>
           ) : (
             <p className="tsub tsm">Enter a link name above, then click <strong>Create links</strong>.</p>
@@ -5297,7 +5349,7 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
         </div>
       </div>
 
-      {embedCode && org?.slug && (
+      {embedCode && linksReady && (
         <div className="card" style={{ marginBottom: 24 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>🔗 Website embed button</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Paste this HTML into your website to add a &quot;Book online&quot; button.</p>
@@ -5307,9 +5359,9 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
       )}
 
       <div className="card" style={{ marginBottom: 24 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>💳 Stripe deposits</div>
-        <p className="tsub tsm" style={{ marginBottom: 12 }}>
-          Collect booking deposits via Stripe Checkout. Add <code>STRIPE_SECRET_KEY</code> and <code>APP_URL</code> to your Vercel environment variables, then use the &quot;Deposit&quot; button on any booking.
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>💳 Card payments (deposits)</div>
+        <p className="tsub tsm" style={{ margin: 0 }}>
+          When card payments are enabled for your account, you can collect booking deposits from the <strong>Bookings</strong> page using the Deposit button on any reservation.
         </p>
       </div>
     </div>
