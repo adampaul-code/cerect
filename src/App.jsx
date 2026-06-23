@@ -212,6 +212,63 @@ async function getOrgDetails(orgId, token) {
   return rows?.[0] || null;
 }
 
+function orgPublicSlug(org) {
+  if (!org) return null;
+  if (org.slug) return org.slug;
+  if (!org.name) return null;
+  return org.name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+function OnlineLinksCard({ org, showToast, onGoTo }) {
+  const slug = orgPublicSlug(org);
+  const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
+  const portalUrl = slug ? `${window.location.origin}/portal/${slug}` : null;
+
+  function copy(text, label) {
+    navigator.clipboard.writeText(text);
+    showToast(`📋 ${label} copied`);
+  }
+
+  if (!bookingUrl) {
+    return (
+      <div className="card" style={{ marginBottom: 18, background: "#FFF8E1", border: "1.5px solid #FFD54F" }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>🚀 Online booking links</div>
+        <p className="tsub tsm" style={{ margin: 0 }}>Finish setting up your business in Cerect to get your public booking and customer portal links.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 18, background: "linear-gradient(135deg,#F7FAFF 0%,#FFFBF0 100%)", border: "1.5px solid #E4EAF2" }}>
+      <div className="fr" style={{ justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>🚀 Your public links</div>
+          <p className="tsub tsm" style={{ margin: 0 }}>Share these on your website, Google listing, or social media.</p>
+        </div>
+        {onGoTo && <button className="btn btn-outline btn-sm" onClick={() => onGoTo("growth")}>More options →</button>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ background: "#fff", borderRadius: 10, padding: "12px 14px", border: "1px solid #E4EAF2" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--sub)", marginBottom: 6 }}>BOOKING PAGE</div>
+          <code style={{ display: "block", fontSize: 11, wordBreak: "break-all", marginBottom: 10, color: "var(--navy)" }}>{bookingUrl}</code>
+          <div className="fr" style={{ gap: 6 }}>
+            <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")}>Copy</button>
+            <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Open</a>
+          </div>
+        </div>
+        <div style={{ background: "#fff", borderRadius: 10, padding: "12px 14px", border: "1px solid #E4EAF2" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--sub)", marginBottom: 6 }}>CUSTOMER PORTAL</div>
+          <code style={{ display: "block", fontSize: 11, wordBreak: "break-all", marginBottom: 10, color: "var(--navy)" }}>{portalUrl}</code>
+          <div className="fr" style={{ gap: 6 }}>
+            <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")}>Copy</button>
+            <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Open</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 const DOC_TAGS = ["Contract","ID / Passport","Correspondence","Payment Record","Insurance","Reference","Photo","Other"];
 
@@ -1176,7 +1233,7 @@ function EditModal({item,onClose,onSave,onDelete,onArchive,onChangeUnitId,isNew,
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({data,enquiries=[],tasks=[],bookings=[],onEdit,onAdd,onDelete,onGoTo}){
+function Dashboard({data,enquiries=[],tasks=[],bookings=[],org,showToast,onEdit,onAdd,onDelete,onGoTo}){
   const res=data.filter(d=>d.category==="Residential");
   const com=data.filter(d=>d.category==="Commercial");
   const stor=data.filter(d=>d.category==="Storage");
@@ -1231,6 +1288,7 @@ function Dashboard({data,enquiries=[],tasks=[],bookings=[],onEdit,onAdd,onDelete
 
   return(
     <div>
+      <OnlineLinksCard org={org} showToast={showToast} onGoTo={onGoTo} />
       {/* Revenue KPIs */}
       <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}><button className="btn btn-outline btn-sm" onClick={()=>onGoTo&&onGoTo("tasks")}>🔧 Add Task</button></div>
       <div className="kg" style={{gridTemplateColumns:"repeat(4,1fr)"}}>
@@ -4970,7 +5028,7 @@ function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
     } catch { alert("Payment service unavailable"); }
   }
 
-  const publicUrl = org?.slug ? `${window.location.origin}/book/${org.slug}` : null;
+  const publicUrl = orgPublicSlug(org) ? `${window.location.origin}/book/${orgPublicSlug(org)}` : null;
 
   if (dbError) return (
     <div className="card" style={{ padding: 24 }}>
@@ -5099,8 +5157,9 @@ function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
 
 // ─── Growth & Online ──────────────────────────────────────────────────────────
 function GrowthPage({ org, showToast }) {
-  const bookingUrl = org?.slug ? `${window.location.origin}/book/${org.slug}` : null;
-  const portalUrl = org?.slug ? `${window.location.origin}/portal/${org.slug}` : null;
+  const slug = orgPublicSlug(org);
+  const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
+  const portalUrl = slug ? `${window.location.origin}/portal/${slug}` : null;
   const embedCode = bookingUrl ? `<a href="${bookingUrl}" style="display:inline-block;padding:12px 24px;background:#1B2B4B;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Book online</a>` : null;
 
   const features = [
@@ -6664,7 +6723,7 @@ export default function App(){
               ?<div className="loading">⏳ Loading your data…</div>
               :<>
                 {page==="superadmin"&&isSuperAdmin&&<SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate}/>}
-                {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} bookings={bookings} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
+                {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} bookings={bookings} org={activeOrg} showToast={showToast} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
                 {page==="bookings"&&<BookingsPage token={token} data={data} orgId={orgId} org={activeOrg} showToast={showToast} onReload={loadData}/>}
                 {page==="growth"&&<GrowthPage org={activeOrg} showToast={showToast}/>}
                 {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow} showToast={showToast}
