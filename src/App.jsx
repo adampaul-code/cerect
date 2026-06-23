@@ -254,9 +254,10 @@ function OnlineLinksCard({ org, showToast, onGoTo }) {
 
   if (!bookingUrl) {
     return (
-      <div className="card" style={{ marginBottom: 18, background: "#FFF8E1", border: "1.5px solid #FFD54F" }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>🚀 Online booking links</div>
-        <p className="tsub tsm" style={{ margin: 0 }}>Finish setting up your business in Cerect to get your public booking and customer portal links.</p>
+      <div className="card" style={{ marginBottom: 18, background: "#F7FAFF", border: "1.5px solid #E4EAF2" }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>🚀 Set up your public links</div>
+        <p className="tsub tsm" style={{ margin: "0 0 12px" }}>Go to <strong>Growth & Online</strong> in the sidebar, enter a link name, and click <strong>Create links</strong>.</p>
+        {onGoTo && <button className="btn btn-primary btn-sm" onClick={() => onGoTo("growth")}>Go to Growth & Online →</button>}
       </div>
     );
   }
@@ -5065,12 +5066,16 @@ function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
       <div className="fr" style={{ justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <div className="ct">Bookings</div>
-          <p className="tsub tsm">Manage online and in-person reservations — compete with Stora & Storeganise.</p>
+          <p className="tsub tsm">Manage online and in-person reservations for storage, residential, and commercial.</p>
         </div>
         <div className="fr" style={{ gap: 8 }}>
-          {publicUrl && (
+          {publicUrl ? (
             <button className="btn btn-outline btn-sm" onClick={() => { navigator.clipboard.writeText(publicUrl); showToast("📋 Public booking link copied"); }}>
               🔗 Copy public link
+            </button>
+          ) : (
+            <button className="btn btn-outline btn-sm" onClick={() => window.__camSetPage && window.__camSetPage("growth")}>
+              🔗 Set up public link
             </button>
           )}
           <button className="btn btn-primary btn-sm" onClick={openAdd}>+ New booking</button>
@@ -5184,8 +5189,14 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
   const [savingSlug, setSavingSlug] = useState(false);
 
   useEffect(() => {
-    setSlugInput(orgPublicSlug(org) || "");
-  }, [org?.id, org?.slug, org?.name]);
+    const suggested = orgPublicSlug(org) || slugFromName(org?.name) || "";
+    setSlugInput(suggested);
+    if (org?.id && token && !org?.slug && suggested) {
+      ensureOrgSlug(org, token).then(updated => {
+        if (updated?.slug && onOrgUpdate) onOrgUpdate(updated);
+      });
+    }
+  }, [org?.id, org?.slug, org?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const slug = slugInput.trim() || orgPublicSlug(org);
   const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
@@ -5215,18 +5226,6 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
     setSavingSlug(false);
   }
 
-  const features = [
-    { name: "Online booking page", cerect: true, stora: true, storeganise: true },
-    { name: "Customer self-service portal", cerect: true, stora: true, storeganise: true },
-    { name: "Stripe deposit payments", cerect: true, stora: true, storeganise: true },
-    { name: "Multi-property (Storage + Residential + Commercial)", cerect: true, stora: false, storeganise: false },
-    { name: "Payment reconciliation & arrears tracking", cerect: true, stora: true, storeganise: true },
-    { name: "Tasks, documents & audit log", cerect: true, stora: false, storeganise: false },
-    { name: "E-signatures", cerect: false, stora: true, storeganise: true },
-    { name: "Access control integrations", cerect: false, stora: true, storeganise: true },
-    { name: "Marketing website builder", cerect: false, stora: true, storeganise: false },
-  ];
-
   function copy(text, label) {
     navigator.clipboard.writeText(text);
     showToast(`📋 ${label} copied`);
@@ -5237,12 +5236,12 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
       <div className="ct" style={{ marginBottom: 4 }}>Growth & Online</div>
       <p className="tsub tsm" style={{ marginBottom: 24 }}>Your online presence — share these links on your website, Google listing, or social media.</p>
 
-      <div className="card" style={{ marginBottom: 24 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>🔗 Your link name</div>
-        <p className="tsub tsm" style={{ marginBottom: 12 }}>
+      <div className="card" style={{ marginBottom: 24, border: "2px solid var(--gold)", background: "#FFFBF0" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>🔗 Step 1 — Create your public links</div>
+        <p className="tsub tsm" style={{ marginBottom: 14 }}>
           {org?.name
-            ? <>Business: <strong>{org.name}</strong> — your links use the short name below.</>
-            : "Set a short name for your public links (e.g. acme-storage)."}
+            ? <>Business: <strong>{org.name}</strong>. Choose a short web address for your booking page.</>
+            : "Choose a short web address for your booking page (e.g. acme-storage)."}
         </p>
         <div className="fr" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{ fontSize: 13, color: "var(--sub)" }}>{window.location.origin}/book/</span>
@@ -5250,48 +5249,55 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
             value={slugInput}
             onChange={e => setSlugInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
             placeholder="your-business-name"
-            style={{ flex: 1, minWidth: 180, fontFamily: "var(--fb)", fontSize: 14, padding: "8px 12px", border: "1.5px solid #E4EAF2", borderRadius: 8 }}
+            style={{ flex: 1, minWidth: 200, fontFamily: "var(--fb)", fontSize: 15, padding: "10px 12px", border: "2px solid #E4EAF2", borderRadius: 8 }}
           />
-          <button className="btn btn-primary btn-sm" onClick={saveSlug} disabled={savingSlug || !slugInput.trim()}>
-            {savingSlug ? "Saving…" : org?.slug ? "Update" : "Create links"}
+          <button className="btn btn-primary" onClick={saveSlug} disabled={savingSlug || !slugInput.trim()}>
+            {savingSlug ? "Saving…" : org?.slug ? "Update links" : "Create links"}
           </button>
         </div>
+        {!org?.slug && slugInput && (
+          <p className="tsub tsm" style={{ marginTop: 12, marginBottom: 0, color: "#7A5C00" }}>
+            Click <strong>Create links</strong> to save — then your booking and portal URLs will appear below.
+          </p>
+        )}
       </div>
 
       <div className="g2" style={{ marginBottom: 24 }}>
         <div className="card">
           <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Public booking page</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Customers browse available units and request a booking 24/7.</p>
-          {bookingUrl && org?.slug ? (
+          {bookingUrl ? (
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{bookingUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")}>Copy link</button>
-                <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(bookingUrl, "Booking link")} disabled={!org?.slug}>Copy link</button>
+                <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none", opacity: org?.slug ? 1 : 0.5, pointerEvents: org?.slug ? "auto" : "none" }}>Preview →</a>
               </div>
+              {!org?.slug && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Save your link name above first.</p>}
             </>
           ) : (
-            <p className="tsub tsm">Click <strong>Create links</strong> above to generate your booking page.</p>
+            <p className="tsub tsm">Enter a link name above, then click <strong>Create links</strong>.</p>
           )}
         </div>
         <div className="card">
           <div style={{ fontWeight: 700, marginBottom: 8 }}>👤 Customer portal</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Tenants view their unit, rent, and payment history by email — no login required.</p>
-          {portalUrl && org?.slug ? (
+          {portalUrl ? (
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{portalUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")}>Copy link</button>
-                <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
+                <button className="btn btn-primary btn-sm" onClick={() => copy(portalUrl, "Portal link")} disabled={!org?.slug}>Copy link</button>
+                <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none", opacity: org?.slug ? 1 : 0.5, pointerEvents: org?.slug ? "auto" : "none" }}>Preview →</a>
               </div>
+              {!org?.slug && <p className="tsub tsm" style={{ marginTop: 10, marginBottom: 0 }}>Save your link name above first.</p>}
             </>
           ) : (
-            <p className="tsub tsm">Click <strong>Create links</strong> above to generate your customer portal.</p>
+            <p className="tsub tsm">Enter a link name above, then click <strong>Create links</strong>.</p>
           )}
         </div>
       </div>
 
-      {embedCode && (
+      {embedCode && org?.slug && (
         <div className="card" style={{ marginBottom: 24 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>🔗 Website embed button</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Paste this HTML into your website to add a &quot;Book online&quot; button.</p>
@@ -5305,26 +5311,6 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
         <p className="tsub tsm" style={{ marginBottom: 12 }}>
           Collect booking deposits via Stripe Checkout. Add <code>STRIPE_SECRET_KEY</code> and <code>APP_URL</code> to your Vercel environment variables, then use the &quot;Deposit&quot; button on any booking.
         </p>
-        <div style={{ background: "#FFF8E1", border: "1.5px solid #FFD54F", borderRadius: 8, padding: "12px 14px", fontSize: 13, color: "#7A5C00" }}>
-          Coming next: recurring rent billing, automated late fees, and e-signatures.
-        </div>
-      </div>
-
-      <div className="card">
-        <div style={{ fontWeight: 700, marginBottom: 12 }}>Cerect vs Stora vs Storeganise</div>
-        <div className="tw"><table>
-          <thead><tr><th>Feature</th><th>Cerect</th><th>Stora</th><th>Storeganise</th></tr></thead>
-          <tbody>
-            {features.map(f => (
-              <tr key={f.name}>
-                <td>{f.name}</td>
-                <td style={{ textAlign: "center" }}>{f.cerect ? "✅" : "—"}</td>
-                <td style={{ textAlign: "center" }}>{f.stora ? "✅" : "—"}</td>
-                <td style={{ textAlign: "center" }}>{f.storeganise ? "✅" : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table></div>
       </div>
     </div>
   );
