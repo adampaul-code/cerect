@@ -223,21 +223,25 @@ function orgPublicSlug(org) {
   return slugFromName(org.name);
 }
 
+async function saveOrgSlug(orgId, slug, token) {
+  const r = await fetch("/api/save-org-slug", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orgId, slug, accessToken: token }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Could not save link name");
+  return d.org;
+}
+
 async function ensureOrgSlug(org, token) {
   if (!org?.id || !token) return org;
   const slug = org.slug || slugFromName(org.name);
   if (!slug) return org;
   if (org.slug === slug) return org;
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
-      method: "PATCH",
-      headers: { ...authH(token), Prefer: "return=representation" },
-      body: JSON.stringify({ slug }),
-    });
-    if (r.ok) {
-      const rows = await r.json();
-      return Array.isArray(rows) && rows[0] ? rows[0] : { ...org, slug };
-    }
+    const saved = await saveOrgSlug(org.id, slug, token);
+    return saved ? { ...org, ...saved, slug: saved.slug || slug } : { ...org, slug };
   } catch {}
   return { ...org, slug };
 }
@@ -5234,23 +5238,14 @@ function GrowthPage({ org, token, showToast, onOrgUpdate }) {
     if (!org?.id) return;
     setSavingSlug(true);
     try {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
-        method: "PATCH",
-        headers: { ...authH(token), Prefer: "return=representation" },
-        body: JSON.stringify({ slug: clean }),
-      });
-      if (!r.ok) throw new Error("Could not save");
-      let updated = { ...org, slug: clean };
-      try {
-        const rows = await r.json();
-        if (Array.isArray(rows) && rows[0]) updated = { ...updated, ...rows[0], slug: clean };
-      } catch {}
+      const saved = await saveOrgSlug(org.id, clean, token);
+      const updated = { ...org, ...saved, slug: saved?.slug || clean };
       if (onOrgUpdate) onOrgUpdate(updated);
       setSlugInput(clean);
       setLinksSaved(true);
       showToast("✅ Your public links are ready");
-    } catch {
-      showToast("❌ Could not save link — try a different name");
+    } catch (e) {
+      showToast("❌ " + (e.message || "Could not save link — try a different name"));
     }
     setSavingSlug(false);
   }

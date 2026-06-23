@@ -69,7 +69,22 @@ export default function CustomerPortal({ orgSlug }) {
   }
 
   if (loading) return <div className="portal"><style>{CSS}</style><div className="portal-inner"><p>Loading…</p></div></div>;
-  if (error && !org) return <div className="portal"><style>{CSS}</style><div className="portal-inner"><p>{error}</p></div></div>;
+  if (error && !org) return (
+    <div className="portal"><style>{CSS}</style>
+      <div className="portal-inner">
+        <div className="portal-logo">cerect<span>.</span></div>
+        <div className="card" style={{ marginTop: 24 }}>
+          <h2>Page not found</h2>
+          <p style={{ color: "var(--sub)", fontSize: 14, marginBottom: 16 }}>
+            {error === "Organisation not found"
+              ? "This customer portal link hasn't been activated yet. If you own this business, log in to Cerect, go to Growth & Online, and click Create links."
+              : error}
+          </p>
+          <a href="/" className="btn btn-primary" style={{ textDecoration: "none", display: "inline-block" }}>Go to Cerect</a>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="portal">

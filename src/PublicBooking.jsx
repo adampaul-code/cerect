@@ -93,7 +93,22 @@ export default function PublicBooking({ orgSlug }) {
   }
 
   if (loading) return <div className="pub"><style>{CSS}</style><div className="pub-inner"><p>Loading…</p></div></div>;
-  if (error && !org) return <div className="pub"><style>{CSS}</style><div className="pub-inner"><p>{error}</p></div></div>;
+  if (error && !org) return (
+    <div className="pub"><style>{CSS}</style>
+      <div className="pub-inner">
+        <div className="pub-logo">cerect<span>.</span></div>
+        <div className="card" style={{ marginTop: 24 }}>
+          <h2>Page not found</h2>
+          <p style={{ color: "var(--sub)", fontSize: 14, marginBottom: 16 }}>
+            {error === "Organisation not found"
+              ? "This booking link hasn't been activated yet. If you own this business, log in to Cerect, go to Growth & Online, and click Create links."
+              : error}
+          </p>
+          <a href="/" className="btn btn-primary" style={{ textDecoration: "none", display: "inline-block" }}>Go to Cerect</a>
+        </div>
+      </div>
+    </div>
+  );
 
   if (done) return (
     <div className="pub"><style>{CSS}</style>
