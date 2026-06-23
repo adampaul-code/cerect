@@ -212,11 +212,34 @@ async function getOrgDetails(orgId, token) {
   return rows?.[0] || null;
 }
 
+function slugFromName(name) {
+  if (!name) return null;
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || null;
+}
+
 function orgPublicSlug(org) {
   if (!org) return null;
   if (org.slug) return org.slug;
-  if (!org.name) return null;
-  return org.name.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return slugFromName(org.name);
+}
+
+async function ensureOrgSlug(org, token) {
+  if (!org?.id || !token) return org;
+  const slug = org.slug || slugFromName(org.name);
+  if (!slug) return org;
+  if (org.slug === slug) return org;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+      method: "PATCH",
+      headers: { ...authH(token), Prefer: "return=representation" },
+      body: JSON.stringify({ slug }),
+    });
+    if (r.ok) {
+      const rows = await r.json();
+      return Array.isArray(rows) && rows[0] ? rows[0] : { ...org, slug };
+    }
+  } catch {}
+  return { ...org, slug };
 }
 
 function OnlineLinksCard({ org, showToast, onGoTo }) {
@@ -5156,11 +5179,41 @@ function BookingsPage({ token, data, orgId, org, showToast, onReload }) {
 }
 
 // ─── Growth & Online ──────────────────────────────────────────────────────────
-function GrowthPage({ org, showToast }) {
-  const slug = orgPublicSlug(org);
+function GrowthPage({ org, token, showToast, onOrgUpdate }) {
+  const [slugInput, setSlugInput] = useState(orgPublicSlug(org) || "");
+  const [savingSlug, setSavingSlug] = useState(false);
+
+  useEffect(() => {
+    setSlugInput(orgPublicSlug(org) || "");
+  }, [org?.id, org?.slug, org?.name]);
+
+  const slug = slugInput.trim() || orgPublicSlug(org);
   const bookingUrl = slug ? `${window.location.origin}/book/${slug}` : null;
   const portalUrl = slug ? `${window.location.origin}/portal/${slug}` : null;
   const embedCode = bookingUrl ? `<a href="${bookingUrl}" style="display:inline-block;padding:12px 24px;background:#1B2B4B;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Book online</a>` : null;
+
+  async function saveSlug() {
+    const clean = slugFromName(slugInput.trim());
+    if (!clean) { showToast("❌ Enter a valid link name (letters and numbers)"); return; }
+    if (!org?.id) return;
+    setSavingSlug(true);
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/organisations?id=eq.${org.id}`, {
+        method: "PATCH",
+        headers: { ...authH(token), Prefer: "return=representation" },
+        body: JSON.stringify({ slug: clean }),
+      });
+      if (!r.ok) throw new Error("Could not save");
+      const rows = await r.json();
+      const updated = Array.isArray(rows) ? rows[0] : { ...org, slug: clean };
+      if (onOrgUpdate) onOrgUpdate(updated);
+      setSlugInput(clean);
+      showToast("✅ Your public links are ready");
+    } catch {
+      showToast("❌ Could not save link — try a different name");
+    }
+    setSavingSlug(false);
+  }
 
   const features = [
     { name: "Online booking page", cerect: true, stora: true, storeganise: true },
@@ -5184,11 +5237,32 @@ function GrowthPage({ org, showToast }) {
       <div className="ct" style={{ marginBottom: 4 }}>Growth & Online</div>
       <p className="tsub tsm" style={{ marginBottom: 24 }}>Your online presence — share these links on your website, Google listing, or social media.</p>
 
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>🔗 Your link name</div>
+        <p className="tsub tsm" style={{ marginBottom: 12 }}>
+          {org?.name
+            ? <>Business: <strong>{org.name}</strong> — your links use the short name below.</>
+            : "Set a short name for your public links (e.g. acme-storage)."}
+        </p>
+        <div className="fr" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--sub)" }}>{window.location.origin}/book/</span>
+          <input
+            value={slugInput}
+            onChange={e => setSlugInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+            placeholder="your-business-name"
+            style={{ flex: 1, minWidth: 180, fontFamily: "var(--fb)", fontSize: 14, padding: "8px 12px", border: "1.5px solid #E4EAF2", borderRadius: 8 }}
+          />
+          <button className="btn btn-primary btn-sm" onClick={saveSlug} disabled={savingSlug || !slugInput.trim()}>
+            {savingSlug ? "Saving…" : org?.slug ? "Update" : "Create links"}
+          </button>
+        </div>
+      </div>
+
       <div className="g2" style={{ marginBottom: 24 }}>
         <div className="card">
           <div style={{ fontWeight: 700, marginBottom: 8 }}>📅 Public booking page</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Customers browse available units and request a booking 24/7.</p>
-          {bookingUrl ? (
+          {bookingUrl && org?.slug ? (
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{bookingUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
@@ -5196,12 +5270,14 @@ function GrowthPage({ org, showToast }) {
                 <a href={bookingUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
               </div>
             </>
-          ) : <p className="tsub tsm">Complete onboarding to get your booking link.</p>}
+          ) : (
+            <p className="tsub tsm">Click <strong>Create links</strong> above to generate your booking page.</p>
+          )}
         </div>
         <div className="card">
           <div style={{ fontWeight: 700, marginBottom: 8 }}>👤 Customer portal</div>
           <p className="tsub tsm" style={{ marginBottom: 12 }}>Tenants view their unit, rent, and payment history by email — no login required.</p>
-          {portalUrl ? (
+          {portalUrl && org?.slug ? (
             <>
               <code style={{ display: "block", background: "#F5F7FA", padding: "10px 12px", borderRadius: 8, fontSize: 12, wordBreak: "break-all", marginBottom: 10 }}>{portalUrl}</code>
               <div className="fr" style={{ gap: 8 }}>
@@ -5209,7 +5285,9 @@ function GrowthPage({ org, showToast }) {
                 <a href={portalUrl} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ textDecoration: "none" }}>Preview →</a>
               </div>
             </>
-          ) : <p className="tsub tsm">Complete onboarding to get your portal link.</p>}
+          ) : (
+            <p className="tsub tsm">Click <strong>Create links</strong> above to generate your customer portal.</p>
+          )}
         </div>
       </div>
 
@@ -5977,7 +6055,8 @@ export default function App(){
     getOrgForUser(session.user.id, session.access_token).then(async row => {
       if (row?.org_id) {
         const o = await getOrgDetails(row.org_id, session.access_token);
-        setOrg(o);
+        const withSlug = await ensureOrgSlug(o, session.access_token);
+        setOrg(withSlug);
         // Log the login
         auditLog(session.access_token, row.org_id, session.user.email, "login", "user", session.user.id, session.user.email, {});
         // If org is archived or suspended, block access
@@ -6725,7 +6804,7 @@ export default function App(){
                 {page==="superadmin"&&isSuperAdmin&&<SuperAdminPage token={token} session={session} onImpersonate={handleImpersonate}/>}
                 {page==="dashboard"&&<Dashboard data={data} enquiries={enquiries} tasks={tasks} bookings={bookings} org={activeOrg} showToast={showToast} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddFromDashboard} onDelete={handleDelete} onGoTo={p=>setPage(p)}/>}
                 {page==="bookings"&&<BookingsPage token={token} data={data} orgId={orgId} org={activeOrg} showToast={showToast} onReload={loadData}/>}
-                {page==="growth"&&<GrowthPage org={activeOrg} showToast={showToast}/>}
+                {page==="growth"&&<GrowthPage org={activeOrg} token={token} showToast={showToast} onOrgUpdate={setOrg}/>}
                 {page==="site"&&<SitePlan data={data} areas={areas} onEdit={r=>{setEditItem(r);setIsNew(false);}} onAdd={handleAddUnit} onDelete={handleDelete} onRenameRow={handleRenameRow} onDeleteRow={handleDeleteRow} showToast={showToast}
                   onSaveAreaOrder={async(names)=>{await areasUpdateOrder(names,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);}}
                   onAddArea={async(name)=>{await areasUpsert(name,"Storage",areas.length,token,orgId);const fresh=await areasGet(token,orgId);setAreas(fresh||[]);showToast(`✅ Area "${name}" created`);}}
